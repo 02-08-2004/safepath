@@ -8,3 +8,4 @@ requests==2.32.3
 twilio==9.2.3
 osmnx==1.9.3
 networkx==3.3
+psycopg[binary]
