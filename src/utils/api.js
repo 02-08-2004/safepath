@@ -1,26 +1,19 @@
 // ── PHASE 4: API Service ─────────────────────────────────────────────────────
 const BASE = import.meta.env.VITE_API_URL || '/api'
-export async function fetchSafeRoutes(olat, olng, dlat, dlng) {
 
+export async function fetchSafeRoutes(originLat, originLng, destLat, destLng) {
   try {
-
+    const controller = new AbortController()
+    const timeoutId  = setTimeout(() => controller.abort(), 120000)
     const res = await fetch(
-      `http://localhost:8000/route/safe?olat=${olat}&olng=${olng}&dlat=${dlat}&dlng=${dlng}`
+      `${BASE}/route/safe?olat=${originLat}&olng=${originLng}&dlat=${destLat}&dlng=${destLng}`,
+      { signal: controller.signal }
     )
-
-    if (!res.ok) {
-      console.error("Route API error")
-      return null
-    }
-
-    const data = await res.json()
-
-    return data
-
-  } catch (err) {
-
-    console.error("Route API failed:", err)
-
+    clearTimeout(timeoutId)
+    if (!res.ok) throw new Error('API error')
+    return await res.json()
+  } catch (e) {
+    console.warn('fetchSafeRoutes failed:', e?.message)
     return null
   }
 }
@@ -43,9 +36,9 @@ export async function fetchIncidents(lat, lng, radiusMeters = 500) {
 export async function submitFeedback({ lat, lng, rating, tags }) {
   try {
     const res = await fetch(`${BASE}/feedback`, {
-      method: 'POST',
+      method:  'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ lat, lng, rating, tags, ts: Date.now() }),
+      body:    JSON.stringify({ lat, lng, rating, tags, ts: Date.now() }),
     })
     return res.ok
   } catch {
@@ -54,16 +47,21 @@ export async function submitFeedback({ lat, lng, rating, tags }) {
 }
 
 export async function sendSOS(lat, lng, userName = 'SafePath User') {
-  const mapsLink = `https://maps.google.com/?q=${lat},${lng}`
   try {
     const res = await fetch(`${BASE}/sos`, {
-      method: 'POST',
+      method:  'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ lat, lng, user_name: userName }),
+      body:    JSON.stringify({ lat, lng, user_name: userName }),
     })
-    if (res.ok) return { method: 'sms', success: true }
-  } catch { /* fall through */ }
-  const msg = encodeURIComponent(`🚨 EMERGENCY: ${userName} needs help!\nLocation: ${mapsLink}`)
-  window.open(`https://wa.me/?text=${msg}`, '_blank')
-  return { method: 'whatsapp', success: true }
+    if (res.ok) {
+      const data = await res.json()
+      if (data.status === 'sms_sent') {
+        console.log('SMS sent via Twilio to', data.to)
+        return { method: 'sms', success: true }
+      }
+    }
+  } catch (e) {
+    console.warn('SOS failed:', e)
+  }
+  return { method: 'failed', success: false }
 }

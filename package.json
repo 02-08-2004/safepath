@@ -8,6 +8,9 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@capacitor/android": "^8.2.0",
+    "@capacitor/cli": "^8.2.0",
+    "@capacitor/core": "^8.2.0",
     "@turf/turf": "^6.5.0",
     "leaflet": "^1.9.4",
     "leaflet-polylinedecorator": "^1.6.0",

@@ -16,69 +16,20 @@ const DEFAULT_DEST   = ''
 const DEFAULT_ORIGIN_COORDS = [16.4307, 80.5195]
 const DEFAULT_DEST_COORDS   = [16.4520, 80.5080]
 
-/* ── Geocode — tries multiple queries to find any AP location ── */
+/* ── Geocode via backend proxy — avoids CORS issues ── */
 async function geocode(query) {
-  const AP_MIN_LAT = 12.5, AP_MAX_LAT = 19.5
-  const AP_MIN_LON = 76.5, AP_MAX_LON = 84.5
-
-  // Try these queries in order until one finds a result in AP
-  const attempts = [
-    query + ', Andhra Pradesh, India',
-    query + ', Telangana, India',
-    query + ', India',
-    query,
-  ]
-
-  for (const attempt of attempts) {
-    try {
-      const q = encodeURIComponent(attempt)
-      const res = await fetch(
-        `https://nominatim.openstreetmap.org/search?q=${q}&format=json&limit=10&countrycodes=in`,
-        { headers: { 'Accept-Language': 'en' } }
-      )
-      const data = await res.json()
-      if (!data || data.length === 0) continue
-
-      // Filter to South India (AP, Telangana, Tamil Nadu, Karnataka)
-      const southIndia = data.filter(p => {
-        const lat = parseFloat(p.lat)
-        const lon = parseFloat(p.lon)
-        return lat >= AP_MIN_LAT && lat <= AP_MAX_LAT &&
-               lon >= AP_MIN_LON && lon <= AP_MAX_LON
-      })
-
-      if (southIndia.length === 0) continue
-
-      // Sort by proximity to Vijayawada center
-      southIndia.sort((a, b) => {
-        const da = Math.hypot(parseFloat(a.lat) - 16.5062, parseFloat(a.lon) - 80.6480)
-        const db = Math.hypot(parseFloat(b.lat) - 16.5062, parseFloat(b.lon) - 80.6480)
-        return da - db
-      })
-
-      const best = southIndia[0]
-      console.log(`Geocoded "${query}" → ${best.lat}, ${best.lon} (${best.display_name.slice(0,60)})`)
-      return [parseFloat(best.lat), parseFloat(best.lon)]
-
-    } catch (e) {
-      console.warn('Geocode attempt failed:', e)
-    }
-  }
-
-  // Last resort: try without country filter
   try {
-    const q = encodeURIComponent(query + ', Andhra Pradesh')
-    const res = await fetch(
-      `https://nominatim.openstreetmap.org/search?q=${q}&format=json&limit=5`,
-      { headers: { 'Accept-Language': 'en' } }
-    )
+    const BASE = import.meta.env.VITE_API_URL || '/api'
+    const res  = await fetch(`${BASE}/geocode?q=${encodeURIComponent(query)}`)
+    if (!res.ok) return null
     const data = await res.json()
-    if (data && data.length > 0) {
-      return [parseFloat(data[0].lat), parseFloat(data[0].lon)]
-    }
-  } catch (e) {}
-
-  return null
+    if (!data || data.length === 0) return null
+    console.log(`Geocoded "${query}" → ${data[0].lat}, ${data[0].lng} (${data[0].label})`)
+    return [data[0].lat, data[0].lng]
+  } catch (e) {
+    console.warn('Geocode failed:', e)
+    return null
+  }
 }
 
 export default function App() {
@@ -106,6 +57,24 @@ export default function App() {
 
   const { position, accuracy, error: gpsError, loading: gpsLoading } = useGPS()
   const { wsStatus, serverMsg } = useLocationStream(position)
+  const [locationName, setLocationName] = useState('Mangalagiri, AP')
+
+  // Reverse geocode to get real location name
+  useEffect(() => {
+    if (!position) return
+    fetch(
+      `https://nominatim.openstreetmap.org/reverse?lat=${position[0]}&lon=${position[1]}&format=json`,
+      { headers: { "Accept-Language": "en" } }
+    )
+    .then(r => r.json())
+    .then(d => {
+      const a = d.address || {}
+      const name = a.village || a.suburb || a.neighbourhood || a.town || a.city || a.county || ""
+      const state = a.state_district || a.state || "AP"
+      if (name) setLocationName(`${name}, ${state}`)
+    })
+    .catch(() => {})
+  }, [position?.[0]?.toFixed(2), position?.[1]?.toFixed(2)]) // eslint-disable-line
 
   useEffect(() => {
     if (!serverMsg) return
@@ -237,7 +206,7 @@ export default function App() {
         </div>
 
         <div className={styles.headerRight}>
-          📍 Mangalagiri, AP
+          📍 {locationName}
           <span className={`${styles.wsChip} ${wsStatus === 'connected' ? styles.wsOn : ''}`}>
             {wsStatus === 'connected' ? '● WS' : '○ WS'}
           </span>

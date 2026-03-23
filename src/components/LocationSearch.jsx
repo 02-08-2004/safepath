@@ -1,90 +1,29 @@
-// ── LocationSearch — Uses Geoapify for accurate Indian locations ──────────
+// ── LocationSearch — Google Places + Nominatim fallback ──────────────────
 import { useState, useEffect, useRef } from 'react'
 import styles from './LocationSearch.module.css'
 
-// Free Geoapify API key — 3000 requests/day free
-// Get your own at https://www.geoapify.com/
-const GEOAPIFY_KEY = import.meta.env.VITE_GEOAPIFY_KEY || '524b504e0c36417895491b54c705b72c'
-
-async function searchPlaces(query) {
-  // Try Geoapify first (most accurate for India)
-  if (GEOAPIFY_KEY && GEOAPIFY_KEY !== '524b504e0c36417895491b54c705b72c') {
-    try {
-      const q = encodeURIComponent(query)
-      const res = await fetch(
-        `https://api.geoapify.com/v1/geocode/autocomplete?text=${q}&countrycodes=in&filter=rect:76.0,12.0,85.0,20.0&limit=6&apiKey=${GEOAPIFY_KEY}`,
-      )
-      const data = await res.json()
-      if (data.features?.length > 0) {
-        return data.features.map(f => ({
-          label: f.properties.formatted,
-          lat:   f.geometry.coordinates[1],
-          lng:   f.geometry.coordinates[0],
-        }))
-      }
-    } catch(e) {}
-  }
-
-  // Fallback: Nominatim with strict AP bounding box
-  // AP bbox: north=19.5, south=12.5, east=84.5, west=76.5
-  const results = []
-  const seen    = new Set()
-
-  const queries = [
-    query + ' Andhra Pradesh India',
-    query + ' Vijayawada',
-    query + ' Guntur',
-    query + ' Amaravati',
-  ]
-
-  for (const q of queries) {
-    if (results.length >= 6) break
-    try {
-      const encoded = encodeURIComponent(q)
-      const res = await fetch(
-        `https://nominatim.openstreetmap.org/search?q=${encoded}&format=json&limit=4&countrycodes=in&viewbox=76.5,19.5,84.5,12.5&bounded=1&addressdetails=1`,
-        { headers: { 'Accept-Language': 'en', 'User-Agent': 'SafePath/1.0' } }
-      )
-      const data = await res.json()
-      for (const p of data) {
-        const lat = parseFloat(p.lat)
-        const lon = parseFloat(p.lon)
-        const key = `${lat.toFixed(3)},${lon.toFixed(3)}`
-        if (seen.has(key)) continue
-        if (lat < 12.5 || lat > 19.5 || lon < 76.5 || lon > 84.5) continue
-        seen.add(key)
-        results.push({
-          label: formatLabel(p),
-          lat, lng: lon,
-        })
-      }
-    } catch(e) {}
-  }
-
-  return results.slice(0, 6)
-}
-
-function formatLabel(p) {
-  const a = p.address || {}
-  const parts = []
-  if (p.name) parts.push(p.name)
-  if (a.suburb || a.neighbourhood) parts.push(a.suburb || a.neighbourhood)
-  const city = a.city || a.town || a.village
-  if (city && city !== p.name) parts.push(city)
-  if (a.state_district) parts.push(a.state_district)
-  if (a.state) parts.push(a.state)
-  return [...new Set(parts)].filter(Boolean).join(', ') || p.display_name.slice(0,70)
-}
+const GOOGLE_KEY = import.meta.env.VITE_GOOGLE_MAPS_KEY || ''
 
 export default function LocationSearch({ value, onChange, onSelect, placeholder, dotClass }) {
   const [suggestions, setSuggestions] = useState([])
   const [show,        setShow]        = useState(false)
   const [loading,     setLoading]     = useState(false)
-  const debounceRef = useRef(null)
-  const wrapRef     = useRef(null)
+  const debounceRef  = useRef(null)
+  const wrapRef      = useRef(null)
+  const googleLoaded = useRef(false)
 
   useEffect(() => {
-    const fn = (e) => { if (wrapRef.current && !wrapRef.current.contains(e.target)) setShow(false) }
+    if (!GOOGLE_KEY || googleLoaded.current) return
+    if (window.google?.maps?.places) { googleLoaded.current = true; return }
+    const script = document.createElement('script')
+    script.src = `https://maps.googleapis.com/maps/api/js?key=${GOOGLE_KEY}&libraries=places`
+    script.async = true
+    script.onload = () => { googleLoaded.current = true }
+    document.head.appendChild(script)
+  }, [])
+
+  useEffect(() => {
+    const fn = e => { if (wrapRef.current && !wrapRef.current.contains(e.target)) setShow(false) }
     document.addEventListener('mousedown', fn)
     return () => document.removeEventListener('mousedown', fn)
   }, [])
@@ -125,7 +64,8 @@ export default function LocationSearch({ value, onChange, onSelect, placeholder,
         />
         {loading && <span className={styles.spinner}>⌛</span>}
         {value && !loading && (
-          <button className={styles.clear} onClick={() => { onChange(''); setSuggestions([]); setShow(false); onSelect(null) }}>✕</button>
+          <button className={styles.clear}
+            onClick={() => { onChange(''); setSuggestions([]); setShow(false); onSelect(null) }}>✕</button>
         )}
       </div>
 
@@ -136,18 +76,84 @@ export default function LocationSearch({ value, onChange, onSelect, placeholder,
               {suggestions.map((s, i) => (
                 <div key={i} className={styles.item} onClick={() => handleSelect(s)}>
                   <span className={styles.pin}>📍</span>
-                  <div className={styles.itemLabel}>{s.label}</div>
+                  <div className={styles.itemText}>
+                    <div className={styles.mainText}>{s.mainText || s.label}</div>
+                    {s.secondText && <div className={styles.secondText}>{s.secondText}</div>}
+                  </div>
                 </div>
               ))}
-              <div className={styles.footer}>OpenStreetMap · AP focused</div>
+              <div className={styles.footer}>
+                {GOOGLE_KEY && googleLoaded.current ? '⚡ Google Maps' : '📍 OpenStreetMap'}
+              </div>
             </>
-          ) : !loading && value.length >= 2 ? (
+          ) : !loading ? (
             <div className={styles.noResult}>
-              No results in AP — try: "Mangalagiri", "Benz Circle Vijayawada"
+              No results — try adding district name e.g. "Neerukonda Guntur"
             </div>
-          ) : null}
+          ) : (
+            <div className={styles.noResult}>Searching...</div>
+          )}
         </div>
       )}
     </div>
   )
+}
+
+async function searchPlaces(query) {
+  const results = []
+  const seen    = new Set()
+
+  // Try Google Places first if key available
+  if (window.google?.maps?.places) {
+    const googleResults = await googleSearch(query)
+    for (const r of googleResults) {
+      const key = `${r.lat.toFixed(3)},${r.lng.toFixed(3)}`
+      if (!seen.has(key)) { seen.add(key); results.push(r) }
+    }
+    if (results.length >= 5) return results
+  }
+
+  // Use backend proxy to avoid CORS — backend calls Nominatim server-side
+  try {
+    const BASE = import.meta.env.VITE_API_URL || '/api'
+    const res  = await fetch(`${BASE}/geocode?q=${encodeURIComponent(query)}`)
+    if (res.ok) {
+      const data = await res.json()
+      for (const item of data) {
+        const key = `${item.lat.toFixed(3)},${item.lng.toFixed(3)}`
+        if (!seen.has(key)) { seen.add(key); results.push(item) }
+      }
+    }
+  } catch(e) {
+    console.warn('Backend geocode failed:', e)
+  }
+
+  return results.slice(0, 6)
+}
+
+async function googleSearch(query) {
+  return new Promise(resolve => {
+    const svc = new window.google.maps.places.AutocompleteService()
+    svc.getPlacePredictions({
+      input: query,
+      componentRestrictions: { country: 'in' },
+      location: new window.google.maps.LatLng(16.5062, 80.6480),
+      radius: 500000,
+    }, (predictions, status) => {
+      if (status !== 'OK' || !predictions) { resolve([]); return }
+      const geocoder = new window.google.maps.Geocoder()
+      Promise.all(predictions.slice(0, 5).map(p => new Promise(res => {
+        geocoder.geocode({ placeId: p.place_id }, (results, st) => {
+          if (st !== 'OK' || !results[0]) { res(null); return }
+          const loc = results[0].geometry.location
+          res({
+            label:      p.description,
+            mainText:   p.structured_formatting.main_text,
+            secondText: p.structured_formatting.secondary_text,
+            lat: loc.lat(), lng: loc.lng(),
+          })
+        })
+      }))).then(items => resolve(items.filter(Boolean)))
+    })
+  })
 }

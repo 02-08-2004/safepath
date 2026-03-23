@@ -61,48 +61,34 @@ export default function MapOverlay({
 
   const badge = selectedRoute ? scoreToBadge(selectedRoute.safetyScore) : null
 
-  // ── Reset navigation progress when navigation stops ─────────────────────
   useEffect(() => {
     if (!navStarted) {
       setStepIndex(0)
     }
   }, [navStarted])
 
-  // ── Live navigation: advance step as user moves ──────────────────────────
   useEffect(() => {
-
     if (!navStarted || !selectedRoute || !userPosition) return
-
     const coords = selectedRoute.coords
     let closest = 0
     let minDist = Infinity
-
     coords.forEach((c, i) => {
       const d = getDistance(userPosition, c)
       if (d < minDist) { minDist = d; closest = i }
     })
-
     if (closest > stepIndex && closest < coords.length - 1) {
       setStepIndex(closest)
     }
-
   }, [userPosition, navStarted, selectedRoute])
 
   async function handleSOS() {
-
     if (!userPosition) return alert('GPS not yet available')
-
     setSosLoading(true)
-
     const result = await sendSOS(userPosition[0], userPosition[1])
-
     setSosLoading(false)
     setSosDone(true)
-
     setTimeout(() => setSosDone(false), 4000)
-
-    if (result?.method === 'whatsapp')
-      alert('Opening WhatsApp to share your location.')
+    // No alert popup — WhatsApp opens automatically
   }
 
   const coords = selectedRoute?.coords || []

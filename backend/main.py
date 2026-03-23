@@ -292,43 +292,92 @@ class SOSBody(BaseModel):
 
 @app.post("/sos")
 def send_sos(body: SOSBody):
-
     maps_link = f"https://maps.google.com/?q={body.lat},{body.lng}"
+    time_str = datetime.utcnow().strftime("%I:%M %p UTC")
+    message = f"EMERGENCY ALERT! {body.user_name} needs help! Location: {maps_link} Time: {time_str} -SafePath"
 
-    message = f"""
-🚨 EMERGENCY ALERT 🚨
+    sid = os.getenv("TWILIO_ACCOUNT_SID", "")
+    token = os.getenv("TWILIO_AUTH_TOKEN", "")
+    from_ = os.getenv("TWILIO_FROM_NUMBER", "")
+    to = os.getenv("EMERGENCY_CONTACT", "")
 
-{body.user_name} needs help!
-
-Live location:
-{maps_link}
-"""
-
-    sid = os.getenv("TWILIO_ACCOUNT_SID")
-    token = os.getenv("TWILIO_AUTH_TOKEN")
-    to = os.getenv("EMERGENCY_CONTACT")
-
-    from twilio.rest import Client
-
-    client = Client(sid, token)
-
-    client.messages.create(
-        body=message, from_="whatsapp:+14155238886", to=f"whatsapp:{to}"
-    )
-
-    return {"status": "whatsapp_sent"}
     if sid and token and from_ and to:
         try:
             from twilio.rest import Client
 
             client = Client(sid, token)
-
-            client.messages.create(body=message, from_=from_, to=to)
-            log.info(f"SOS SMS sent to {to}")
-            return {"status": "sms_sent", "to": to}
+            msg = client.messages.create(body=message, from_=from_, to=to)
+            log.info(f"SOS SMS sent to {to} — SID: {msg.sid}")
+            return {"status": "sms_sent", "to": to, "sid": msg.sid}
         except Exception as e:
-            log.error(f"Twilio error: {e}")
-    return {"status": "whatsapp_fallback", "message": message}
+            log.error(f"SMS error: {e}")
+            return {"status": "failed", "error": str(e)}
+    return {"status": "config_missing"}
+
+
+@app.get("/geocode")
+def geocode(q: str):
+    import requests
+
+    results = []
+    seen = set()
+    attempts = [
+        q + ", Andhra Pradesh, India",
+        q + ", Guntur, India",
+        q + ", Amaravati, India",
+        q + ", India",
+        q,
+    ]
+    for attempt in attempts:
+        if len(results) >= 6:
+            break
+        try:
+            r = requests.get(
+                "https://nominatim.openstreetmap.org/search",
+                params={
+                    "q": attempt,
+                    "format": "json",
+                    "limit": 5,
+                    "countrycodes": "in",
+                    "addressdetails": 1,
+                },
+                headers={"Accept-Language": "en", "User-Agent": "SafePath/1.0"},
+                timeout=8,
+            )
+            for p in r.json():
+                lat, lng = float(p["lat"]), float(p["lon"])
+                key = f"{lat:.3f},{lng:.3f}"
+                if key in seen:
+                    continue
+                seen.add(key)
+                a = p.get("address", {})
+                main = p.get("name", q)
+                parts = [
+                    a.get("village") or a.get("suburb") or a.get("neighbourhood"),
+                    a.get("city") or a.get("town") or a.get("municipality"),
+                    a.get("state_district"),
+                    a.get("state"),
+                ]
+                parts = list(dict.fromkeys(x for x in parts if x))
+                results.append(
+                    {
+                        "label": ", ".join([main] + parts),
+                        "mainText": main,
+                        "secondText": ", ".join(parts),
+                        "lat": lat,
+                        "lng": lng,
+                    }
+                )
+        except Exception as e:
+            log.warning(f"Geocode attempt failed: {e}")
+    # Sort AP results first
+    results.sort(
+        key=lambda x: (
+            0 if 12.5 <= x["lat"] <= 19.5 and 76.5 <= x["lng"] <= 84.5 else 1,
+            ((x["lat"] - 16.5062) ** 2 + (x["lng"] - 80.6480) ** 2),
+        )
+    )
+    return results[:6]
 
 
 @app.get("/health")
