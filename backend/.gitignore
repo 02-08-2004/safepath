@@ -1,0 +1,20 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+*.egg-info/
+
+# Backend cache (VERY IMPORTANT)
+cache/
+backend/cache/
+*.json
+
+# Node / Frontend
+node_modules/
+
+# Env files
+.env
+
+# Build
+dist/
+build/
