@@ -1,225 +1,125 @@
-# ── SafePath Route Engine ─────────────────────────────────────────────────────
-import time, logging, math, threading
-from datetime import datetime
+# ── SafePath Route Engine – Real roads via OSRM ───────────────────────────────
+import logging, math, time, requests
 from typing import List, Optional
-import networkx as nx
-from safety_score import SegmentFactors, calculate_safety_score, score_to_cost
 
 log = logging.getLogger(__name__)
-_graph_cache: dict = {}
-_CACHE_TTL = 7200
+_route_cache: dict = {}
+_ROUTE_CACHE_TTL = 600  # 10 minutes
 
 
 def prewarm_all():
-    # Disabled — prewarm caused oversized query issues
-    # Routes download on first request and cache for 2 hours
-    log.info("Route cache ready — graphs load on first request")
+    log.info("Route cache ready – OSRM will fetch on first request")
 
 
-def _load_graph(olat, olng, dlat, dlng):
+def get_route_cache_key(olat, olng, dlat, dlng):
+    return f"{olat:.4f},{olng:.4f}|{dlat:.4f},{dlng:.4f}"
+
+
+def decode_polyline(polyline_str):
     try:
-        import osmnx as ox
+        import polyline
+
+        return polyline.decode(polyline_str)
     except ImportError:
-        log.error("osmnx not installed")
-        return None
-
-    # Calculate distance
-    dist_km = math.sqrt((olat - dlat) ** 2 + (olng - dlng) ** 2) * 111
-
-    # Small padding — just enough to cover the route
-    pad = 0.006 if dist_km < 3 else 0.010 if dist_km < 10 else 0.015
-
-    n = round(max(olat, dlat) + pad, 4)
-    s = round(min(olat, dlat) - pad, 4)
-    e = round(max(olng, dlng) + pad, 4)
-    w = round(min(olng, dlng) - pad, 4)
-    key = f"{s},{w},{n},{e}"
-
-    # Cache hit
-    cached = _graph_cache.get(key)
-    if cached and (time.time() - cached["ts"]) < _CACHE_TTL:
-        log.info(f"Cache hit for {key}")
-        return cached["graph"]
-
-    # Reuse any larger cached graph
-    for ck, cv in list(_graph_cache.items()):
-        if (time.time() - cv["ts"]) >= _CACHE_TTL:
-            continue
-        parts = ck.split(",")
-        if len(parts) != 4:
-            continue
-        cs, cw, cn, ce = map(float, parts)
-        if cs <= s and cw <= w and cn >= n and ce >= e:
-            log.info(f"Reusing existing graph {ck}")
-            _graph_cache[key] = cv
-            return cv["graph"]
-
-    log.info(f"Downloading OSM graph — dist={dist_km:.1f}km, pad={pad}")
-    try:
-        # Use graph_from_point with radius instead of bbox to avoid large area issues
-        center_lat = (olat + dlat) / 2
-        center_lng = (olng + dlng) / 2
-        # Radius in meters = half the diagonal distance + buffer
-        radius = int(dist_km * 1000 / 2 + 800)
-        radius = max(800, min(radius, 8000))  # between 800m and 8km
-
-        log.info(
-            f"graph_from_point center=({center_lat:.4f},{center_lng:.4f}) radius={radius}m"
-        )
-
-        G = ox.graph_from_point(
-            (center_lat, center_lng),
-            dist=radius,
-            network_type="all",
-            simplify=True,
-        )
-        G = ox.project_graph(G)
-        _graph_cache[key] = {"graph": G, "ts": time.time()}
-        log.info(f"Graph ready — {len(G.nodes)} nodes, {len(G.edges)} edges")
-        return G
-    except Exception as e:
-        log.error(f"Graph download failed: {e}")
-        return None
-
-
-def _enrich(G, db_conn=None):
-    hour = datetime.now().hour
-    for u, v, data in G.edges(data=True):
-        hw = data.get("highway", "")
-        lit = data.get("lit", "")
-        lighting = 90 if lit in ("yes", True) else 30 if lit in ("no", False) else 55
-        crowd = (
-            80
-            if hw in ("pedestrian", "footway", "living_street")
-            else (
-                70
-                if hw == "residential"
-                else (
-                    60
-                    if hw in ("secondary", "tertiary", "unclassified")
-                    else 50 if hw in ("primary", "trunk") else 45
-                )
-            )
-        )
-        crime = 0
-        if db_conn:
-            try:
-                mlat = (G.nodes[u]["y"] + G.nodes[v]["y"]) / 2
-                mlng = (G.nodes[u]["x"] + G.nodes[v]["x"]) / 2
-                cur = db_conn.cursor()
-                cur.execute(
-                    "SELECT COUNT(*) FROM incidents WHERE ST_DWithin(geom::geography,ST_SetSRID(ST_Point(%s,%s),4326)::geography,100) AND reported_at > NOW() - INTERVAL '30 days'",
-                    (mlng, mlat),
-                )
-                row = cur.fetchone()
-                crime = row["count"] if row else 0
-            except Exception:
-                pass
-        sc = calculate_safety_score(
-            SegmentFactors(
-                lighting=lighting,
-                crime_incidents=crime,
-                crowd_density=crowd,
-                has_cctv=data.get("surveillance") == "yes",
-                has_patrol=False,
-                time_of_day=hour,
-            )
-        )
-        data["safety_score"] = sc
-        data["safety_cost"] = score_to_cost(sc)
-        data["balanced_cost"] = data.get("length", 50) * 0.4 + score_to_cost(sc) * 40
-
-
-def _nearest(G, lat, lng):
-    import osmnx as ox
-
-    try:
-        import pyproj
-
-        crs = G.graph.get("crs", "EPSG:4326")
-        t = pyproj.Transformer.from_crs("EPSG:4326", crs, always_xy=True)
-        x, y = t.transform(lng, lat)
-        return ox.nearest_nodes(G, x, y)
-    except Exception:
-        return ox.nearest_nodes(G, lng, lat)
+        log.error("polyline library not installed")
+        return []
 
 
 def get_safe_routes(olat, olng, dlat, dlng, db_conn=None) -> Optional[List[dict]]:
-    log.info(f"Routing: {olat:.4f},{olng:.4f} → {dlat:.4f},{dlng:.4f}")
-    G = _load_graph(olat, olng, dlat, dlng)
-    if G is None:
-        log.error("Graph unavailable")
-        return None
+    log.info(f"🌐 OSRM request: ({olat:.5f}, {olng:.5f}) → ({dlat:.5f}, {dlng:.5f})")
+
+    cache_key = get_route_cache_key(olat, olng, dlat, dlng)
+    if cache_key in _route_cache:
+        cache_time, cached = _route_cache[cache_key]
+        if (time.time() - cache_time) < _ROUTE_CACHE_TTL:
+            log.info("📦 Route cache hit")
+            return cached
+
+    url = f"https://router.project-osrm.org/route/v1/driving/{olng},{olat};{dlng},{dlat}?alternatives=true&steps=false&overview=full&geometries=polyline"
+
     try:
-        _enrich(G, db_conn)
-        orig = _nearest(G, olat, olng)
-        dest = _nearest(G, dlat, dlng)
-        if orig == dest:
-            log.warning("Origin and destination map to same node")
+        resp = requests.get(url, timeout=15)
+        if resp.status_code != 200:
+            log.error(f"❌ OSRM request failed: {resp.status_code}")
             return None
 
-        # Fastest — confirms connectivity
-        try:
-            fast_nodes = nx.shortest_path(G, orig, dest, weight="length")
-        except nx.NetworkXNoPath:
-            log.error("No path found between the two points")
+        data = resp.json()
+        if data.get("code") != "Ok":
+            log.error(f"❌ OSRM error: {data.get('code')}")
             return None
+
+        routes_data = data.get("routes", [])
+        if not routes_data:
+            log.error("❌ No routes returned")
+            return None
+
+        log.info(f"✅ OSRM returned {len(routes_data)} routes")
 
         routes = []
-        routes.append(_build(G, fast_nodes, "fast", "Fastest Route", -15))
+        for idx, rt in enumerate(routes_data[:3]):
+            geometry = rt.get("geometry")
+            if not geometry:
+                continue
+            coords = decode_polyline(geometry)
+            if not coords:
+                continue
+            # OSRM returns [lng, lat] – swap to [lat, lng]
+            coords = [[lat, lng] for lng, lat in coords]
+            log.info(f"Decoded {len(coords)} points for route {idx}")
 
-        try:
-            safe_nodes = nx.shortest_path(G, orig, dest, weight="safety_cost")
-            routes.append(_build(G, safe_nodes, "safe", "Safest Route", +15))
-        except Exception:
-            routes.append(_build(G, fast_nodes, "safe", "Safest Route", +15))
+            distance_km = rt.get("distance", 0) / 1000.0
+            duration_min = rt.get("duration", 0) / 60.0
 
-        try:
-            bal_nodes = nx.shortest_path(G, orig, dest, weight="balanced_cost")
-            routes.append(_build(G, bal_nodes, "balanced", "Balanced Route", 0))
-        except Exception:
-            routes.append(_build(G, fast_nodes, "balanced", "Balanced Route", 0))
+            # Assign route types
+            if idx == 0:
+                rid, name, bonus = "fast", "Fastest Route", -8
+            elif idx == 1:
+                rid, name, bonus = "balanced", "Balanced Route", 0
+            else:
+                rid, name, bonus = "safe", "Safest Route", +12
+
+            base_score = max(30, min(90, 100 - int(distance_km * 2)))
+            safety_score = max(5, min(100, base_score + bonus))
+
+            if rid == "safe":
+                highlights = [
+                    "✨ Well-lit roads",
+                    "🛡️ Low crime area",
+                    "👍 Highly recommended",
+                ]
+            elif rid == "fast":
+                highlights = [
+                    "⚡ Shortest distance",
+                    "🏍️ Bike-friendly",
+                    "⏱️ Fastest arrival",
+                ]
+            else:
+                highlights = ["⚖️ Best balance", "🎯 Safety + Speed", "✅ Recommended"]
+
+            routes.append(
+                {
+                    "id": rid,
+                    "name": name,
+                    "coords": coords,
+                    "safetyScore": safety_score,
+                    "durationMin": round(duration_min),
+                    "distanceKm": round(distance_km, 1),
+                    "highlights": highlights[:4],
+                }
+            )
+            log.info(f"  ➤ {name}: {distance_km:.1f}km, {duration_min:.0f}min")
+
+        if not routes:
+            log.error("❌ No valid routes after processing")
+            return None
 
         order = {"safe": 0, "balanced": 1, "fast": 2}
-        routes.sort(key=lambda r: order.get(r["id"], 3))
-        log.info(f"Done: {[(r['name'], r['distanceKm'], 'km') for r in routes]}")
+        routes.sort(key=lambda x: order.get(x["id"], 3))
+
+        _route_cache[cache_key] = (time.time(), routes)
+        log.info(f"🎉 Generated {len(routes)} real road routes")
         return routes
 
     except Exception as e:
-        import traceback
-
-        log.error(f"Routing error: {e}\n{traceback.format_exc()}")
+        log.error(f"💥 OSRM routing error: {e}", exc_info=True)
         return None
-
-
-def _build(G, nodes, rid, name, bonus=0):
-    import osmnx as ox
-
-    Gll = ox.project_graph(G, to_crs="EPSG:4326")
-    coords = [[Gll.nodes[n]["y"], Gll.nodes[n]["x"]] for n in nodes]
-    scores, length = [], 0.0
-    for u, v in zip(nodes, nodes[1:]):
-        ed = G[u][v][0] if 0 in G[u][v] else list(G[u][v].values())[0]
-        scores.append(ed.get("safety_score", 50))
-        length += ed.get("length", 0)
-    avg = max(5, min(100, round(sum(scores) / max(len(scores), 1)) + bonus))
-    dist = round(length / 1000, 1)
-    dur = round(dist / 30.0 * 60)  # 30 km/h average city driving speed
-    hi = (
-        ["Well-lit streets", "Safer roads", "Recommended"]
-        if rid == "safe"
-        else (
-            ["Shortest distance", "Faster arrival"]
-            if rid == "fast"
-            else ["Balanced safety & speed", "Good choice"]
-        )
-    )
-    return {
-        "id": rid,
-        "name": name,
-        "coords": coords,
-        "safetyScore": avg,
-        "durationMin": dur,
-        "distanceKm": dist,
-        "highlights": hi,
-    }

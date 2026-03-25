@@ -7,7 +7,7 @@ import MapOverlay    from './components/MapOverlay.jsx'
 import FeedbackModal from './components/FeedbackModal.jsx'
 import { useGPS }             from './hooks/useGPS.js'
 import { useLocationStream }  from './hooks/useLocationStream.js'
-import { generateMockRoutes, isOffRoute } from './utils/safety.js'
+import { isOffRoute } from './utils/safety.js'
 import { fetchSafeRoutes, fetchIncidents } from './utils/api.js'
 import styles from './App.module.css'
 
@@ -16,16 +16,17 @@ const DEFAULT_DEST   = ''
 const DEFAULT_ORIGIN_COORDS = [16.4307, 80.5195]
 const DEFAULT_DEST_COORDS   = [16.4520, 80.5080]
 
-/* ── Geocode via backend proxy — avoids CORS issues ── */
+// Use env variable for API base — works both locally and on Render
+const API_BASE = import.meta.env.VITE_API_URL || '/api'
+
 async function geocode(query) {
   try {
-    const BASE = import.meta.env.VITE_API_URL || '/api'
-    const res  = await fetch(`${BASE}/geocode?q=${encodeURIComponent(query)}`)
+    const res = await fetch(`${API_BASE}/geocode?q=${encodeURIComponent(query)}`)
     if (!res.ok) return null
     const data = await res.json()
     if (!data || data.length === 0) return null
     console.log(`Geocoded "${query}" → ${data[0].lat}, ${data[0].lng} (${data[0].label})`)
-    return [data[0].lat, data[0].lng]
+    return [data[0].lat, data[0].lng, data[0].label]
   } catch (e) {
     console.warn('Geocode failed:', e)
     return null
@@ -37,11 +38,36 @@ export default function App() {
   const [dest,   setDest]   = useState(DEFAULT_DEST)
   const [originCoords, setOriginCoords] = useState(DEFAULT_ORIGIN_COORDS)
   const [destCoords,   setDestCoords]   = useState(DEFAULT_DEST_COORDS)
+  const [originName, setOriginName] = useState('')
+  const [destName, setDestName] = useState('')
+  const [originPlace, setOriginPlace] = useState(null)
+  const [destPlace, setDestPlace] = useState(null)
 
-  const handleSetOrigin = (val) => { setOrigin(val); setOriginCoords(DEFAULT_ORIGIN_COORDS) }
-  const handleSetDest   = (val) => { setDest(val);   setDestCoords(DEFAULT_DEST_COORDS) }
-  const handleOriginSelect = (coords) => { setOriginCoords(coords) }
-  const handleDestSelect   = (coords) => { setDestCoords(coords) }
+  const handleSetOrigin = (val) => {
+    setOrigin(val)
+    setOriginPlace(null)
+  }
+
+  const handleSetDest = (val) => {
+    setDest(val)
+    setDestPlace(null)
+  }
+
+  const handleOriginSelect = (place) => {
+    setOriginPlace(place)
+    setOrigin(place.mainText)
+    setOriginCoords([place.lat, place.lng])
+    setOriginName(place.label)
+    console.log('Origin selected:', place)
+  }
+
+  const handleDestSelect = (place) => {
+    setDestPlace(place)
+    setDest(place.mainText)
+    setDestCoords([place.lat, place.lng])
+    setDestName(place.label)
+    console.log('Destination selected:', place)
+  }
 
   const [routes,          setRoutes]          = useState([])
   const [selectedRouteId, setSelectedRouteId] = useState(null)
@@ -82,7 +108,7 @@ export default function App() {
       showToast('🔄 Server recommends a safer route — recalculating…')
       handleFindRoutes()
     }
-  }, [serverMsg])
+  }, [serverMsg]) // eslint-disable-line
 
   const selectedRoute = routes.find(r => r.id === selectedRouteId)
   const offRoute = navStarted && selectedRoute
@@ -92,12 +118,12 @@ export default function App() {
     if (!navStarted) return
     const id = setInterval(() => { if (offRoute) handleFindRoutes() }, 30_000)
     return () => clearInterval(id)
-  }, [navStarted, offRoute])
+  }, [navStarted, offRoute]) // eslint-disable-line
 
   useEffect(() => {
     if (!position) return
     fetchIncidents(position[0], position[1]).then(setIncidents)
-  }, [position?.[0]?.toFixed(3), position?.[1]?.toFixed(3)])
+  }, [position?.[0]?.toFixed(3), position?.[1]?.toFixed(3)]) // eslint-disable-line
 
   const handleFindRoutes = useCallback(async () => {
     setRouteLoading(true)
@@ -106,20 +132,29 @@ export default function App() {
 
     let oCoords = originCoords
     let dCoords = destCoords
+    let oLabel  = originName
+    let dLabel  = destName
 
-    if (origin.trim() === '') {
+    // Handle origin
+    if (!origin || origin.trim() === '') {
       if (position) {
         oCoords = position
         setOriginCoords(position)
+        oLabel = 'Current Location'
       } else {
         oCoords = DEFAULT_ORIGIN_COORDS
         setOriginCoords(DEFAULT_ORIGIN_COORDS)
       }
+    } else if (originPlace) {
+      oCoords = [originPlace.lat, originPlace.lng]
+      oLabel  = originPlace.label
     } else {
       const resolved = await geocode(origin)
       if (resolved) {
-        oCoords = resolved
-        setOriginCoords(resolved)
+        oCoords = [resolved[0], resolved[1]]
+        oLabel  = resolved[2] || origin
+        setOriginCoords(oCoords)
+        setOriginName(oLabel)
       } else {
         setGeocodeError(`Could not find "${origin}" — try full name like "Neerukonda, Guntur"`)
         setRouteLoading(false)
@@ -127,20 +162,26 @@ export default function App() {
       }
     }
 
-    if (dest.trim() === '') {
+    // Handle destination
+    if (!dest || dest.trim() === '') {
       setGeocodeError('Please enter a destination')
       setRouteLoading(false)
       return
-    }
-
-    const resolvedDest = await geocode(dest)
-    if (resolvedDest) {
-      dCoords = resolvedDest
-      setDestCoords(resolvedDest)
+    } else if (destPlace) {
+      dCoords = [destPlace.lat, destPlace.lng]
+      dLabel  = destPlace.label
     } else {
-      setGeocodeError(`Could not find "${dest}" — try full name like "Benz Circle, Vijayawada"`)
-      setRouteLoading(false)
-      return
+      const resolvedDest = await geocode(dest)
+      if (resolvedDest) {
+        dCoords = [resolvedDest[0], resolvedDest[1]]
+        dLabel  = resolvedDest[2] || dest
+        setDestCoords(dCoords)
+        setDestName(dLabel)
+      } else {
+        setGeocodeError(`Could not find "${dest}" — try full name like "Benz Circle, Vijayawada"`)
+        setRouteLoading(false)
+        return
+      }
     }
 
     setLoadingMsg('Calculating routes...')
@@ -155,17 +196,16 @@ export default function App() {
       setRouteLoading(false)
       return
     }
-    // Clear any previous errors since routes succeeded
-    setGeocodeError(null)
 
+    setGeocodeError(null)
     const newRoutes = apiResult.routes
     setRoutes(newRoutes)
-    setSelectedRouteId(newRoutes[0].id)
-    setGeocodeError(null)
+    setSelectedRouteId(newRoutes[0]?.id)
     setRouteLoading(false)
     setSheetOpen(false)
+    showToast(`✅ Found ${newRoutes.length} routes! Tap "Start Navigation" to begin.`)
 
-  }, [origin, dest, originCoords, destCoords, position])
+  }, [origin, dest, originCoords, destCoords, position, originPlace, destPlace]) // eslint-disable-line
 
   function showToast(msg) {
     setToast(msg)
@@ -173,6 +213,7 @@ export default function App() {
   }
 
   function handleStartNav() {
+    if (!selectedRoute) { showToast('Please select a route first'); return }
     setNavStarted(true)
     setSheetOpen(false)
     showToast('▶ Navigation started — stay safe!')
@@ -248,6 +289,8 @@ export default function App() {
             incidents={incidents}
             originPos={originCoords}
             destPos={destCoords}
+            originName={originName}
+            destName={destName}
           />
 
           <MapOverlay

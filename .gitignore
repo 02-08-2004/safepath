@@ -2,7 +2,10 @@
 venv/
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
 *.egg-info/
+*.egg
 
 # Backend cache (VERY IMPORTANT)
 cache/
@@ -11,10 +14,46 @@ backend/cache/
 
 # Node / Frontend
 node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
 
 # Env files
 .env
+.env.*
 
 # Build
 dist/
 build/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.temp
+
+# Python virtual env variants
+env/
+ENV/
+
+# Coverage / testing
+.coverage
+htmlcov/
+
+# Vite specific
+.vite/
+
+# Misc
+*.bak
+*.orig
