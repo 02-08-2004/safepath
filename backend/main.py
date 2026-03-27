@@ -34,18 +34,12 @@ def get_cache_key(query):
     return hashlib.md5(query.lower().strip().encode()).hexdigest()
 
 
+# Find this section in your main.py (around line 20-30)
 def get_db():
-    try:
-        # Convert postgresql:// to postgres:// for psycopg2 compatibility
-        db_url = DB_URL.replace("postgresql://", "postgres://")
-        conn = psycopg2.connect(db_url)
-        return conn
-    except Exception as e:
-        log.warning(f"DB unavailable ({e}) — running in mock mode")
-        return None
+    return None
 
 
-db = get_db()
+db = None
 
 
 def dict_row(cursor, row):
