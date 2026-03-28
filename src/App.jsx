@@ -1,6 +1,7 @@
 // ── App.jsx — SafePath Root Component ───────────────────────────────────────
 
 import { useState, useEffect, useCallback } from 'react'
+import { flushSync } from 'react-dom'
 import MapView       from './components/MapView.jsx'
 import Sidebar       from './components/Sidebar.jsx'
 import MapOverlay    from './components/MapOverlay.jsx'
@@ -10,15 +11,15 @@ import { useLocationStream }  from './hooks/useLocationStream.js'
 import { isOffRoute } from './utils/safety.js'
 import { fetchSafeRoutes, fetchIncidents } from './utils/api.js'
 import LoginGateway from './components/LoginGateway.jsx'
+import AccountModal from './components/AccountModal.jsx'
+import { getAuthPayload, clearAuth } from './utils/api.js'
+import { API_BASE } from './utils/apiBase.js'
 import styles from './App.module.css'
 
 const DEFAULT_ORIGIN = ''
 const DEFAULT_DEST   = ''
 const DEFAULT_ORIGIN_COORDS = [16.4307, 80.5195]
 const DEFAULT_DEST_COORDS   = [16.4520, 80.5080]
-
-// Use env variable for API base — works both locally and on Render
-const API_BASE = import.meta.env.VITE_API_URL || '/api'
 
 async function geocode(query) {
   try {
@@ -44,7 +45,13 @@ export default function App() {
   const [originPlace, setOriginPlace] = useState(null)
   const [destPlace, setDestPlace] = useState(null)
 
-  const [isAuthenticated, setIsAuthenticated] = useState(() => !!localStorage.getItem('safepath_auth'))
+  const [isAuthenticated, setIsAuthenticated] = useState(() => !!getAuthPayload()?.token)
+  const [accountOpen, setAccountOpen] = useState(false)
+
+  const handleAuthenticated = useCallback(() => {
+    if (!getAuthPayload()?.token) return
+    flushSync(() => setIsAuthenticated(true))
+  }, [])
 
   const handleSetOrigin = (val) => {
     setOrigin(val)
@@ -232,7 +239,7 @@ export default function App() {
     <div className={styles.app}>
       
       {!isAuthenticated && (
-        <LoginGateway onAuthenticated={() => setIsAuthenticated(true)} />
+        <LoginGateway onAuthenticated={handleAuthenticated} />
       )}
 
       <header className={styles.header}>
@@ -258,6 +265,27 @@ export default function App() {
           <span className={`${styles.wsChip} ${wsStatus === 'connected' ? styles.wsOn : ''}`}>
             {wsStatus === 'connected' ? '● WS' : '○ WS'}
           </span>
+          {isAuthenticated && (
+            <>
+              <button
+                type="button"
+                className={styles.headerBtn}
+                onClick={() => setAccountOpen(true)}
+              >
+                Account
+              </button>
+              <button
+                type="button"
+                className={styles.headerBtn}
+                onClick={() => {
+                  clearAuth()
+                  setIsAuthenticated(false)
+                }}
+              >
+                Log out
+              </button>
+            </>
+          )}
         </div>
       </header>
 
@@ -322,6 +350,10 @@ export default function App() {
 
       {showFeedback && (
         <FeedbackModal userPosition={position} onClose={() => setShowFeedback(false)} />
+      )}
+
+      {accountOpen && (
+        <AccountModal onClose={() => setAccountOpen(false)} />
       )}
 
       {toast && !geocodeError && (

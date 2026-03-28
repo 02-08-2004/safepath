@@ -62,7 +62,7 @@ def _load_graph(olat, olng, dlat, dlng):
         G = ox.graph_from_point(
             (center_lat, center_lng),
             dist=radius_meters,
-            network_type="all",
+            network_type="drive",
             simplify=True,
         )
 
@@ -73,7 +73,7 @@ def _load_graph(olat, olng, dlat, dlng):
             G = ox.graph_from_point(
                 (center_lat, center_lng),
                 dist=radius_meters,
-                network_type="all",
+                network_type="drive",
                 simplify=True,
             )
 
@@ -139,6 +139,20 @@ def _enrich(G, db_conn=None):
 
         has_cctv = data.get("surveillance") == "yes" or data.get("camera") == "yes"
 
+        # Highly penalize extremely minor roads so routing prefers main roads (like Google Maps)
+        road_penalty = 1.0
+        if isinstance(highway, list):
+            hw = highway[0]
+        else:
+            hw = highway
+            
+        if hw in ["service", "track", "path", "unclassified"]:
+            road_penalty = 3.5  # Massive penalty for dirt roads/service alleys
+        elif hw in ["residential", "living_street"]:
+            road_penalty = 1.8  # Slight penalty for internal village roads
+        else:
+            road_penalty = 1.0  # Main roads (primary, secondary, tertiary) are totally free
+
         sc = calculate_safety_score(
             SegmentFactors(
                 lighting=lighting,
@@ -151,9 +165,14 @@ def _enrich(G, db_conn=None):
         )
 
         data["safety_score"] = sc
-        data["safety_cost"] = score_to_cost(sc)
-        length = data.get("length", 100)
-        data["balanced_cost"] = length * 0.5 + data["safety_cost"] * 0.5
+        length = float(data.get("length", 100))
+        
+        # Calculate real objective weights for Dijkstra's algorithm
+        base_cost = length * road_penalty
+        
+        data["fast_cost"] = base_cost
+        data["safety_cost"] = base_cost * score_to_cost(sc)
+        data["balanced_cost"] = base_cost * 0.5 + data["safety_cost"] * 0.5
 
 
 def _nearest_node(G, lat, lng):
@@ -209,17 +228,28 @@ def get_safe_routes(olat, olng, dlat, dlng, db_conn=None) -> Optional[List[dict]
 
         routes = []
 
-        # 1. Fastest (shortest distance)
-        fast_path = nx.shortest_path(G, orig, dest, weight="length")
+        # 1. Fastest (shortest viable driving distance)
+        fast_path = nx.shortest_path(G, orig, dest, weight="fast_cost")
         fast_route = _build_route(G, fast_path, "fast", "Fastest Route", -8)
         routes.append(fast_route)
         log.info(
             f"Fastest: {fast_route['distanceKm']}km, {fast_route['durationMin']}min"
         )
 
-        # 2. Safest
+        def penalize_edges(path_to_penalize, weight_key, multiplier=1.8):
+            for u, v in zip(path_to_penalize, path_to_penalize[1:]):
+                if G.has_edge(u, v):
+                    for key in G[u][v]:
+                        if weight_key in G[u][v][key]:
+                            G[u][v][key][weight_key] *= multiplier
+
+        # 2. Safest (force alternative by penalizing fast_path)
         try:
+            penalize_edges(fast_path, "safety_cost", 1.5)
             safe_path = nx.shortest_path(G, orig, dest, weight="safety_cost")
+            # Revert penalties isn't strictly necessary since we won't use safety_cost again for this request
+            
+            # If it still somehow matches exactly, let it be (means no other roads exist)
             safe_route = _build_route(G, safe_path, "safe", "Safest Route", +12)
             routes.append(safe_route)
             log.info(f"Safest: {safe_route['distanceKm']}km, {safe_route['durationMin']}min")
@@ -227,8 +257,10 @@ def get_safe_routes(olat, olng, dlat, dlng, db_conn=None) -> Optional[List[dict]
             log.warning(f"Safe route failed: {e}")
             routes.append(_build_route(G, fast_path, "safe", "Safest Route", +12))
 
-        # 3. Balanced
+        # 3. Balanced (force alternative by penalizing both)
         try:
+            penalize_edges(fast_path, "balanced_cost", 1.8)
+            penalize_edges(safe_path, "balanced_cost", 1.5) if 'safe_path' in locals() else None
             bal_path = nx.shortest_path(G, orig, dest, weight="balanced_cost")
             bal_route = _build_route(G, bal_path, "balanced", "Balanced Route", 0)
             routes.append(bal_route)
@@ -293,18 +325,19 @@ def _build_route(G, path, route_id, name, bonus):
         if rn and rn not in road_names:
             road_names.append(rn)
 
-    distance_km = round(total_length / 1000, 1)
+    # Force native Python types for JSON serialization
+    distance_km = float(round(total_length / 1000, 1))
 
     if distance_km < 2:
-        avg_speed = 25
+        avg_speed = 18   # very localized traffic
     elif distance_km < 5:
-        avg_speed = 30
+        avg_speed = 20   # standard town roads
     else:
-        avg_speed = 40
-    duration_min = max(2, round((distance_km / avg_speed) * 60))
+        avg_speed = 22.5 # ~22 mins for 8.1km (real world AP village road speeds)
+    duration_min = int(max(2, round((distance_km / avg_speed) * 60)))
 
-    avg_score = sum(safety_scores) / len(safety_scores) if safety_scores else 50
-    avg_score = max(5, min(100, round(avg_score + bonus)))
+    avg_score = float(sum(safety_scores) / len(safety_scores)) if safety_scores else 50.0
+    avg_score = int(max(5, min(100, round(avg_score + bonus))))
 
     if route_id == "safe":
         highlights = ["✨ Well-lit roads", "🛡️ Low crime area", "👍 Highly recommended"]

@@ -7,8 +7,11 @@ from typing import Optional
 from xmlrpc import client
 import time
 import hashlib
+import secrets
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+import bcrypt
+
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -17,6 +20,9 @@ import psycopg2
 from dotenv import load_dotenv
 
 load_dotenv()
+_env_local = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".env.local")
+if os.path.isfile(_env_local):
+    load_dotenv(_env_local)
 logging.basicConfig(level=logging.INFO, format="%(levelname)s  %(name)s  %(message)s")
 log = logging.getLogger("safepath")
 
@@ -35,7 +41,7 @@ def get_cache_key(query):
 # Find this section in your main.py (around line 20-30)
 def get_db():
     try:
-        conn = psycopg2.connect(DB_URL)
+        conn = psycopg2.connect(DB_URL, connect_timeout=8)
         conn.autocommit = True
         return conn
     except Exception as e:
@@ -96,8 +102,92 @@ def sync_crime_data():
         log.error(f"Crime sync failed: {e}")
 
 
+def hash_password(plain: str) -> str:
+    """bcrypt via the `bcrypt` package (passlib's bcrypt backend breaks on bcrypt 4.x + Python 3.13)."""
+    return bcrypt.hashpw(plain.encode("utf-8"), bcrypt.gensalt(rounds=12)).decode("ascii")
+
+
+# Bearer token → { "email", "display_name" } (in-memory; restart clears sessions)
+sessions: dict[str, dict] = {}
+mock_users: dict[str, dict] = {}
+mock_feedback_user_rows: list[dict] = []
+
+
+def ensure_schema():
+    conn = db
+    if not conn:
+        return
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS app_users (
+                id SERIAL PRIMARY KEY,
+                email TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                display_name TEXT,
+                created_at TIMESTAMP DEFAULT NOW()
+            )
+            """
+        )
+        cur.execute("ALTER TABLE feedback ADD COLUMN IF NOT EXISTS user_email TEXT")
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_feedback_user_email ON feedback (user_email)"
+        )
+    except Exception as e:
+        log.warning(f"ensure_schema: {e}")
+
+
+def issue_session(email: str, display_name: str) -> str:
+    tok = secrets.token_urlsafe(32)
+    sessions[tok] = {"email": email.lower(), "display_name": display_name}
+    return tok
+
+
+def get_session(authorization: Optional[str]) -> Optional[dict]:
+    if not authorization or not authorization.startswith("Bearer "):
+        return None
+    tok = authorization[7:].strip()
+    return sessions.get(tok)
+
+
+def user_exists(email: str) -> bool:
+    e = email.lower().strip()
+    conn = db
+    if conn:
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT 1 FROM app_users WHERE lower(email) = %s", (e,))
+            return cur.fetchone() is not None
+        except Exception as ex:
+            log.warning(f"user_exists: {ex}")
+            return False
+    return e in mock_users
+
+
+def create_user_record(email: str, password_hash: str, display_name: str) -> None:
+    e = email.lower().strip()
+    conn = db
+    if conn:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO app_users (email, password_hash, display_name) VALUES (%s, %s, %s)",
+            (e, password_hash, display_name),
+        )
+    else:
+        mock_users[e] = {"password_hash": password_hash, "display_name": display_name}
+
+
+def require_auth(authorization: Optional[str] = Header(None)) -> dict:
+    s = get_session(authorization)
+    if not s:
+        raise HTTPException(401, "Sign in required")
+    return s
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    ensure_schema()
     start_scheduler()
     try:
         from route_engine import prewarm_all
@@ -296,20 +386,67 @@ class FeedbackBody(BaseModel):
 
 
 @app.post("/feedback")
-def submit_feedback(body: FeedbackBody):
+def submit_feedback(
+    body: FeedbackBody, authorization: Optional[str] = Header(None)
+):
+    sess = get_session(authorization)
+    user_email = sess["email"] if sess else None
     conn = db
     if not conn:
+        mock_feedback_user_rows.append(
+            {
+                "id": len(mock_feedback_user_rows) + 1,
+                "rating": body.rating,
+                "tags": body.tags,
+                "lat": body.lat,
+                "lng": body.lng,
+                "user_email": user_email,
+                "submitted_at": datetime.utcnow().isoformat() + "Z",
+            }
+        )
         return {"status": "saved (mock)"}
     try:
         cur = conn.cursor()
         cur.execute(
-            "INSERT INTO feedback (rating, tags, geom) VALUES (%s, %s, ST_SetSRID(ST_Point(%s, %s), 4326))",
-            (body.rating, body.tags, body.lng or 0, body.lat or 0),
+            "INSERT INTO feedback (rating, tags, geom, user_email) VALUES (%s, %s, ST_SetSRID(ST_Point(%s, %s), 4326), %s)",
+            (body.rating, body.tags, body.lng or 0, body.lat or 0, user_email),
         )
         conn.commit()
         return {"status": "saved"}
     except Exception as e:
         conn.rollback()
+        raise HTTPException(500, str(e))
+
+
+@app.get("/feedback/mine")
+def list_my_feedback(auth: dict = Depends(require_auth)):
+    email = auth["email"]
+    conn = db
+    if not conn:
+        rows = [r for r in mock_feedback_user_rows if r.get("user_email") == email]
+        rows.sort(key=lambda r: r.get("submitted_at", ""), reverse=True)
+        return {"items": rows}
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT id, rating, tags, submitted_at,
+                   ST_Y(geom) AS lat, ST_X(geom) AS lng
+            FROM feedback
+            WHERE lower(user_email) = lower(%s)
+            ORDER BY submitted_at DESC
+            LIMIT 100
+            """,
+            (email,),
+        )
+        cols = [c[0] for c in cur.description]
+        items = [dict(zip(cols, row)) for row in cur.fetchall()]
+        for it in items:
+            if it.get("submitted_at"):
+                it["submitted_at"] = it["submitted_at"].isoformat()
+        return {"items": items}
+    except Exception as e:
+        log.error(f"list_my_feedback: {e}")
         raise HTTPException(500, str(e))
 
 
@@ -637,5 +774,100 @@ def auth_phone_verify(body: PhoneVerifyBody):
     del phone_otps[phone]
     raw_token = f"auth_complete_{phone}_{int(time.time())}"
     token = hashlib.md5(raw_token.encode()).hexdigest()
-    
+
     return {"status": "success", "token": token}
+
+
+class SignupBody(BaseModel):
+    email: str
+    password: str
+
+
+class GoogleCredentialBody(BaseModel):
+    credential: str
+
+
+@app.post("/auth/signup")
+def auth_signup(body: SignupBody):
+    email = body.email.lower().strip()
+    if "@" not in email:
+        raise HTTPException(400, "Invalid email")
+    if len(body.password) < 8:
+        raise HTTPException(400, "Password must be at least 8 characters")
+    if user_exists(email):
+        raise HTTPException(
+            409, "An account already exists with this email. Use Log in with Google."
+        )
+    display_name = email.split("@")[0]
+    try:
+        ph = hash_password(body.password)
+    except ValueError as e:
+        raise HTTPException(400, "Invalid password") from e
+    try:
+        create_user_record(email, ph, display_name)
+    except Exception as e:
+        if "unique" in str(e).lower() or "duplicate" in str(e).lower():
+            raise HTTPException(409, "Account already exists") from e
+        raise HTTPException(500, str(e)) from e
+    token = issue_session(email, display_name)
+    return {"token": token, "email": email, "display_name": display_name}
+
+
+@app.post("/auth/login/google")
+def auth_login_google(body: GoogleCredentialBody):
+    cid = os.getenv("GOOGLE_CLIENT_ID", "").strip()
+    if not cid:
+        cid = os.getenv("VITE_GOOGLE_CLIENT_ID", "").strip()
+    if not cid:
+        raise HTTPException(
+            500, "Set GOOGLE_CLIENT_ID in the API environment (same value as the web client ID)"
+        )
+    try:
+        from google.oauth2 import id_token
+        from google.auth.transport import requests as grequests
+
+        idinfo = id_token.verify_oauth2_token(body.credential, grequests.Request(), cid)
+    except ValueError as e:
+        raise HTTPException(401, f"Invalid Google sign-in: {e}") from e
+    email = (idinfo.get("email") or "").lower().strip()
+    if not email:
+        raise HTTPException(400, "Google did not return an email for this account")
+    if not user_exists(email):
+        raise HTTPException(
+            404,
+            "No SafePath account for this Google email. Use Sign up first with the same email.",
+        )
+    display_name = idinfo.get("name") or email.split("@")[0]
+    token = issue_session(email, display_name)
+    return {"token": token, "email": email, "display_name": display_name}
+
+
+@app.get("/auth/me")
+def auth_me(auth: dict = Depends(require_auth)):
+    return {"email": auth["email"], "display_name": auth["display_name"]}
+
+
+# ── Production SPA (optional): `npm run build` then open http://127.0.0.1:8000 — one origin for Google OAuth
+_DIST = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "dist"))
+if os.path.isfile(os.path.join(_DIST, "index.html")):
+    from fastapi.responses import FileResponse
+    from fastapi.staticfiles import StaticFiles
+
+    @app.get("/", include_in_schema=False)
+    def _spa_index():
+        return FileResponse(os.path.join(_DIST, "index.html"))
+
+    _assets_dir = os.path.join(_DIST, "assets")
+    if os.path.isdir(_assets_dir):
+        app.mount(
+            "/assets",
+            StaticFiles(directory=_assets_dir),
+            name="spa_assets",
+        )
+
+    @app.get("/{spa_path:path}", include_in_schema=False)
+    def _spa_history_fallback(spa_path: str):
+        candidate = os.path.join(_DIST, spa_path)
+        if spa_path and os.path.isfile(candidate):
+            return FileResponse(candidate)
+        return FileResponse(os.path.join(_DIST, "index.html"))

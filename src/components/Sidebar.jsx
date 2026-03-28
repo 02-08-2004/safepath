@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { scoreToBadge } from '../utils/safety.js'
+import { API_BASE } from '../utils/apiBase.js'
 import styles from './Sidebar.module.css'
 
 const PRIORITIES = [
@@ -17,8 +18,6 @@ const FILTERS = [
   { key: 'cctv',     icon: '📹', label: 'CCTV Coverage',   default: false },
   { key: 'hospital', icon: '🏥', label: 'Near Hospitals',  default: false },
 ]
-
-const API_BASE = import.meta.env.VITE_API_URL || '/api'
 
 const PREDEFINED_LOCATIONS = {
   'srm': [{ mainText: 'SRM University - AP', secondText: 'Amaravati, Andhra Pradesh', label: 'SRM University - AP, Amaravati', lat: 16.4624338, lng: 80.5063794 }],

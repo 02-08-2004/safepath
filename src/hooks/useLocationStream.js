@@ -4,8 +4,7 @@
 // Receives safety alerts and reroute commands from the server.
 
 import { useEffect, useRef, useState } from 'react'
-
-const WS_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:8000/ws/location'
+import { getWsUrl } from '../utils/apiBase.js'
 
 export function useLocationStream(position, userId = 'user_001') {
   const ws        = useRef(null)
@@ -14,7 +13,7 @@ export function useLocationStream(position, userId = 'user_001') {
 
   // Open socket once
   useEffect(() => {
-    ws.current = new WebSocket(WS_URL)
+    ws.current = new WebSocket(getWsUrl())
 
     ws.current.onopen  = () => setStatus('connected')
     ws.current.onerror = () => setStatus('error')

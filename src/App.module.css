@@ -68,6 +68,22 @@
   white-space: nowrap;
 }
 
+.headerBtn {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  border-radius: 8px;
+  cursor: pointer;
+  padding: 4px 10px;
+  font-size: 0.65rem;
+  font-family: var(--font-mono);
+}
+
+.headerBtn:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
 .wsChip {
   font-size: 0.65rem;
   padding: 2px 8px;

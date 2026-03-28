@@ -1,5 +1,6 @@
 // ── LocationSearch — Google Places + Nominatim fallback ──────────────────
 import { useState, useEffect, useRef } from 'react'
+import { API_BASE } from '../utils/apiBase.js'
 import styles from './LocationSearch.module.css'
 
 const GOOGLE_KEY = import.meta.env.VITE_GOOGLE_MAPS_KEY || ''
@@ -105,8 +106,7 @@ async function searchPlaces(query) {
 
   // 1. Use backend proxy with High-Priority Amaravati Override Custom Matches
   try {
-    const BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000'
-    const res  = await fetch(`${BASE}/geocode?q=${encodeURIComponent(query)}`)
+    const res = await fetch(`${API_BASE}/geocode?q=${encodeURIComponent(query)}`)
     if (res.ok) {
       const data = await res.json()
       for (const item of data) {

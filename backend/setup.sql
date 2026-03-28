@@ -44,6 +44,15 @@ CREATE INDEX IF NOT EXISTS idx_tracks_user    ON gps_tracks (user_id);
 CREATE INDEX IF NOT EXISTS idx_tracks_geom    ON gps_tracks USING GIST (geom);
 CREATE INDEX IF NOT EXISTS idx_tracks_time    ON gps_tracks (recorded_at DESC);
 
+-- ── App users (email + password signup; returning users sign in with Google) ──
+CREATE TABLE IF NOT EXISTS app_users (
+  id            SERIAL PRIMARY KEY,
+  email         TEXT UNIQUE NOT NULL,
+  password_hash TEXT NOT NULL,
+  display_name  TEXT,
+  created_at    TIMESTAMP DEFAULT NOW()
+);
+
 -- ── User Feedback ────────────────────────────────────────────────────────
 -- Safety ratings submitted from the Rate a Location modal (Phase 4)
 CREATE TABLE IF NOT EXISTS feedback (
@@ -51,9 +60,11 @@ CREATE TABLE IF NOT EXISTS feedback (
   rating      INTEGER CHECK (rating BETWEEN 1 AND 5),
   tags        TEXT[],
   submitted_at TIMESTAMP DEFAULT NOW(),
-  geom        GEOMETRY(POINT, 4326)
+  geom        GEOMETRY(POINT, 4326),
+  user_email  TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_feedback_geom ON feedback USING GIST (geom);
+CREATE INDEX IF NOT EXISTS idx_feedback_user_email ON feedback (user_email);
 
 -- ── Seed: Demo incidents around Mangalagiri ──────────────────────────────
 INSERT INTO incidents (type, description, severity, source, geom) VALUES
