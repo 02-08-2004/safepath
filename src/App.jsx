@@ -15,15 +15,6 @@ import AccountModal from './components/AccountModal.jsx'
 import { getAuthPayload, clearAuth } from './utils/api.js'
 import { API_BASE } from './utils/apiBase.js'
 import styles from './App.module.css'
-// Make sure you're using the correct variable name
-const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID;
-
-console.log("Google Client ID exists:", !!GOOGLE_CLIENT_ID);
-
-
-useEffect(() => {
-  console.log("VITE_GOOGLE_CLIENT_ID:", import.meta.env.VITE_GOOGLE_CLIENT_ID);
-}, []);
 
 const DEFAULT_ORIGIN = ''
 const DEFAULT_DEST = ''
