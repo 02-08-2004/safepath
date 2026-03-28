@@ -44,7 +44,7 @@ export default function LocationSearch({ value, onChange, onSelect, placeholder,
 
   function handleSelect(s) {
     onChange(s.label)
-    onSelect([s.lat, s.lng])
+    onSelect(s)
     setShow(false)
     setSuggestions([])
   }
@@ -100,22 +100,12 @@ export default function LocationSearch({ value, onChange, onSelect, placeholder,
 }
 
 async function searchPlaces(query) {
-  const results = []
+  let results = []
   const seen    = new Set()
 
-  // Try Google Places first if key available
-  if (window.google?.maps?.places) {
-    const googleResults = await googleSearch(query)
-    for (const r of googleResults) {
-      const key = `${r.lat.toFixed(3)},${r.lng.toFixed(3)}`
-      if (!seen.has(key)) { seen.add(key); results.push(r) }
-    }
-    if (results.length >= 5) return results
-  }
-
-  // Use backend proxy to avoid CORS — backend calls Nominatim server-side
+  // 1. Use backend proxy with High-Priority Amaravati Override Custom Matches
   try {
-    const BASE = import.meta.env.VITE_API_URL || '/api'
+    const BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000'
     const res  = await fetch(`${BASE}/geocode?q=${encodeURIComponent(query)}`)
     if (res.ok) {
       const data = await res.json()
@@ -126,6 +116,17 @@ async function searchPlaces(query) {
     }
   } catch(e) {
     console.warn('Backend geocode failed:', e)
+  }
+
+  if (results.length >= 5) return results.slice(0, 6)
+
+  // 2. Try Google Places fallback if key available and we still need results
+  if (window.google?.maps?.places) {
+    const googleResults = await googleSearch(query)
+    for (const r of googleResults) {
+      const key = `${r.lat.toFixed(3)},${r.lng.toFixed(3)}`
+      if (!seen.has(key)) { seen.add(key); results.push(r) }
+    }
   }
 
   return results.slice(0, 6)

@@ -58,3 +58,41 @@ export async function sendSOS(lat, lng, userName = 'SafePath User') {
     return { status: 'error', message: error.message }
   }
 }
+
+// ── Authentication ────────────────────────────────────────────────────────────
+
+export async function sendEmailOTP(email) {
+  const res = await fetch(`${API_BASE}/auth/email/send`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email })
+  })
+  if (!res.ok) throw new Error(await res.text())
+  return res.json()
+}
+
+export async function verifyEmailOTP(email, otp) {
+  const res = await fetch(`${API_BASE}/auth/email/verify`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, otp })
+  })
+  if (!res.ok) throw new Error(await res.text())
+  return res.json()
+}
+
+export async function sendPhoneOTP(phone) {
+  const res = await fetch(`${API_BASE}/auth/phone/send`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ phone })
+  })
+  if (!res.ok) throw new Error(await res.text())
+  return res.json()
+}
+
+export async function verifyPhoneOTP(phone, otp) {
+  const res = await fetch(`${API_BASE}/auth/phone/verify`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ phone, otp })
+  })
+  if (!res.ok) throw new Error(await res.text())
+  return res.json()
+}

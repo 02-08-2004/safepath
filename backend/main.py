@@ -12,9 +12,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-# FIX: Use psycopg2 which is more stable on Render/Railway
 import psycopg2
-from psycopg2.extras import RealDictCursor
 
 from dotenv import load_dotenv
 
@@ -36,10 +34,16 @@ def get_cache_key(query):
 
 # Find this section in your main.py (around line 20-30)
 def get_db():
-    return None
+    try:
+        conn = psycopg2.connect(DB_URL)
+        conn.autocommit = True
+        return conn
+    except Exception as e:
+        log.warning(f"DB unavailable ({e}) — running in mock mode")
+        return None
 
 
-db = None
+db = get_db()
 
 
 def dict_row(cursor, row):
@@ -61,7 +65,8 @@ def start_scheduler():
 
 def sync_crime_data():
     api_key = os.getenv("DATA_GOV_API_KEY", "")
-    if not api_key or not db:
+    conn = db
+    if not api_key or not conn:
         return
     try:
         import requests
@@ -73,7 +78,7 @@ def sync_crime_data():
         )
         for record in r.json().get("records", []):
             try:
-                cur = db.cursor()
+                cur = conn.cursor()
                 cur.execute(
                     "INSERT INTO incidents (type, description, source, geom) VALUES (%s, %s, 'data_gov_in', ST_SetSRID(ST_Point(%s, %s), 4326))",
                     (
@@ -83,9 +88,9 @@ def sync_crime_data():
                         float(record["latitude"]),
                     ),
                 )
-                db.commit()
+                conn.commit()
             except Exception:
-                db.rollback()
+                conn.rollback()
         log.info("Crime sync complete")
     except Exception as e:
         log.error(f"Crime sync failed: {e}")
@@ -130,17 +135,18 @@ async def location_stream(ws: WebSocket):
             lat = float(data["lat"])
             lng = float(data["lng"])
             connected_clients[user_id] = ws
-            if db:
+            conn = db
+            if conn:
                 try:
-                    cur = db.cursor()
+                    cur = conn.cursor()
                     cur.execute(
                         "INSERT INTO gps_tracks (user_id, geom) VALUES (%s, ST_SetSRID(ST_Point(%s, %s), 4326))",
                         (user_id, lng, lat),
                     )
-                    db.commit()
+                    conn.commit()
                 except Exception as e:
                     log.error(f"GPS insert error: {e}")
-                    db.rollback()
+                    conn.rollback()
             await ws.send_json({"status": "saved", "ts": data.get("ts")})
     except WebSocketDisconnect:
         connected_clients.pop(user_id, None)
@@ -149,10 +155,11 @@ async def location_stream(ws: WebSocket):
 
 @app.get("/incidents")
 def get_incidents(lat: float, lng: float, radius: int = 500):
-    if not db:
+    conn = db
+    if not conn:
         return _mock_incidents(lat, lng)
     try:
-        cur = db.cursor()
+        cur = conn.cursor()
         cur.execute(
             """SELECT id, type, description, severity,
                    ST_Y(geom) AS lat, ST_X(geom) AS lng, reported_at
@@ -290,18 +297,19 @@ class FeedbackBody(BaseModel):
 
 @app.post("/feedback")
 def submit_feedback(body: FeedbackBody):
-    if not db:
+    conn = db
+    if not conn:
         return {"status": "saved (mock)"}
     try:
-        cur = db.cursor()
+        cur = conn.cursor()
         cur.execute(
             "INSERT INTO feedback (rating, tags, geom) VALUES (%s, %s, ST_SetSRID(ST_Point(%s, %s), 4326))",
             (body.rating, body.tags, body.lng or 0, body.lat or 0),
         )
-        db.commit()
+        conn.commit()
         return {"status": "saved"}
     except Exception as e:
-        db.rollback()
+        conn.rollback()
         raise HTTPException(500, str(e))
 
 
@@ -351,19 +359,30 @@ def geocode(q: str):
     results = []
     seen = set()
 
+    q_lower = q.lower().strip()
+    custom_locations = {
+        "vit": {"label": "VIT-AP University", "mainText": "VIT-AP University", "secondText": "Main Gate, Inavolu", "lat": 16.4949, "lng": 80.4987, "fullAddress": ""},
+        "srm": {"label": "SRM University - AP", "mainText": "SRM University - AP", "secondText": "Neerukonda, Amaravati", "lat": 16.4520, "lng": 80.5080, "fullAddress": ""},
+        "neerukonda": {"label": "Neerukonda Village", "mainText": "Neerukonda", "secondText": "Amaravati, Andhra Pradesh", "lat": 16.4646, "lng": 80.5002, "fullAddress": ""},
+        "inavolu": {"label": "Inavolu Village", "mainText": "Inavolu", "secondText": "Amaravati, Andhra Pradesh", "lat": 16.4880, "lng": 80.5030, "fullAddress": ""},
+    }
+
+    for key, loc in custom_locations.items():
+        if key in q_lower:
+            results.append(loc)
+            seen.add(f"{loc['lat']:.5f},{loc['lng']:.5f}")
+
     # Add small delay to respect Nominatim rate limits
     time.sleep(0.2)
 
-    # Build search query - try with full context first
+    # Build search query - speed up by reducing external queries
     search_queries = [
-        f"{q}, Amaravati, Andhra Pradesh, India",
-        f"{q}, Andhra Pradesh, India",
-        f"{q}, India",
-        q,
+        f"{q}, Amaravati, Andhra Pradesh",
+        f"{q}, Andhra Pradesh"
     ]
 
     for search_query in search_queries:
-        if len(results) >= 8:
+        if len(results) >= 5:
             break
         try:
             response = requests.get(
@@ -530,3 +549,93 @@ def health():
         "db": "connected" if db else "unavailable (mock mode)",
         "time": datetime.utcnow().isoformat(),
     }
+
+
+# ── Two-Step Authentication Gateway ──────────────────────────────────────────
+
+import random
+
+# In-memory OTP store (Use Redis for production)
+email_otps = {}
+phone_otps = {}
+
+class EmailSendBody(BaseModel):
+    email: str
+
+class EmailVerifyBody(BaseModel):
+    email: str
+    otp: str
+
+class PhoneSendBody(BaseModel):
+    phone: str
+
+class PhoneVerifyBody(BaseModel):
+    phone: str
+    otp: str
+
+@app.post("/auth/email/send")
+def auth_email_send(body: EmailSendBody):
+    # HARDCODED FOR DEMONSTRATION
+    otp = "123456"
+    email_otps[body.email.lower()] = otp
+    log.info(f"*** MOCK EMAIL SENT to {body.email} ***")
+    log.info(f"*** YOUR EMAIL OTP IS: {otp} ***")
+    return {"status": "success", "message": "Email OTP generated (Use 123456 for testing)"}
+
+@app.post("/auth/email/verify")
+def auth_email_verify(body: EmailVerifyBody):
+    email = body.email.lower()
+    if email not in email_otps:
+        raise HTTPException(400, "OTP not found or expired")
+    if email_otps[email] != body.otp:
+        raise HTTPException(400, "Invalid OTP")
+    
+    # Clean up OTP after success
+    del email_otps[email]
+    
+    return {"status": "success", "token": "email_verified_token"}
+
+@app.post("/auth/phone/send")
+def auth_phone_send(body: PhoneSendBody):
+    otp = "123456" # HARDCODED FOR DEMO
+    phone = body.phone
+    phone_otps[phone] = otp
+    
+    sid = os.getenv("TWILIO_ACCOUNT_SID", "")
+    token = os.getenv("TWILIO_AUTH_TOKEN", "")
+    from_ = os.getenv("TWILIO_FROM_NUMBER", "")
+
+    if sid and token and from_ and phone:
+        try:
+            from twilio.rest import Client
+            client = Client(sid, token)
+            msg = client.messages.create(
+                body=f"Your SafePath Verification Code is: {otp}",
+                from_=from_,
+                to=phone
+            )
+            log.info(f"Auth SMS sent to {phone} — SID: {msg.sid}")
+            return {"status": "success", "message": "SMS sent via Twilio"}
+        except Exception as e:
+            log.error(f"Twilio SMS error: {e}")
+            log.info(f"*** MOCK SMS SENT to {phone}: {otp} ***")
+            return {"status": "success", "message": "Twilio failed, but logged mock SMS"}
+            
+    # Fallback if twilio not configured
+    log.info(f"*** MOCK SMS SENT to {phone} ***")
+    log.info(f"*** YOUR PHONE OTP IS: {otp} ***")
+    return {"status": "success", "message": "Mock SMS generated"}
+
+@app.post("/auth/phone/verify")
+def auth_phone_verify(body: PhoneVerifyBody):
+    phone = body.phone
+    if phone not in phone_otps:
+        raise HTTPException(400, "OTP not found or expired")
+    if phone_otps[phone] != body.otp:
+        raise HTTPException(400, "Invalid OTP")
+    
+    del phone_otps[phone]
+    raw_token = f"auth_complete_{phone}_{int(time.time())}"
+    token = hashlib.md5(raw_token.encode()).hexdigest()
+    
+    return {"status": "success", "token": token}

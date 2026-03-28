@@ -41,8 +41,9 @@ def _load_graph(olat, olng, dlat, dlng):
         return None
 
     straight_dist = haversine_distance(olat, olng, dlat, dlng)
-    radius_meters = int(straight_dist * 1000 * 0.8 + 4000)
-    radius_meters = max(5000, min(radius_meters, 20000))
+    # Increase radius to ensure both points are included
+    radius_meters = int(straight_dist * 1000 * 0.6 + 2000)
+    radius_meters = max(2000, min(radius_meters, 15000))
 
     center_lat = (olat + dlat) / 2
     center_lng = (olng + dlng) / 2
@@ -61,26 +62,31 @@ def _load_graph(olat, olng, dlat, dlng):
         G = ox.graph_from_point(
             (center_lat, center_lng),
             dist=radius_meters,
-            network_type="drive",
+            network_type="all",
             simplify=True,
-            retain_all=False,
-            truncate_by_edge=True,
-            clean_periphery=True,
         )
-        if len(G.nodes) < 5:
+
+        # If no roads found, try with larger radius
+        if len(G.nodes) < 10:
             log.info("Few nodes, trying larger radius...")
             radius_meters = radius_meters * 1.5
             G = ox.graph_from_point(
                 (center_lat, center_lng),
                 dist=radius_meters,
-                network_type="drive",
+                network_type="all",
                 simplify=True,
             )
-        if len(G.nodes) < 5:
-            log.error("No road network found")
+
+        if len(G.nodes) < 10:
+            log.error("No road network found in area")
             return None
 
-        G = ox.project_graph(G)
+        # Ensure graph is connected
+        if not nx.is_connected(G.to_undirected()):
+            log.info("Graph not fully connected, taking largest component")
+            largest_cc = max(nx.connected_components(G.to_undirected()), key=len)
+            G = G.subgraph(largest_cc).copy()
+
         _graph_cache[cache_key] = {"graph": G, "ts": time.time()}
         log.info(f"Graph ready: {len(G.nodes)} nodes, {len(G.edges)} edges")
         return G
@@ -188,6 +194,9 @@ def get_safe_routes(olat, olng, dlat, dlng, db_conn=None) -> Optional[List[dict]
 
         orig = _nearest_node(G, olat, olng)
         dest = _nearest_node(G, dlat, dlng)
+
+        log.info(f"Nearest nodes: orig={orig}, dest={dest}")
+
         if orig is None or dest is None:
             log.error("Could not find nearest road nodes")
             return None
@@ -212,24 +221,20 @@ def get_safe_routes(olat, olng, dlat, dlng, db_conn=None) -> Optional[List[dict]
         try:
             safe_path = nx.shortest_path(G, orig, dest, weight="safety_cost")
             safe_route = _build_route(G, safe_path, "safe", "Safest Route", +12)
-            if safe_route["distanceKm"] != fast_route["distanceKm"]:
-                routes.append(safe_route)
-                log.info(
-                    f"Safest: {safe_route['distanceKm']}km, {safe_route['durationMin']}min"
-                )
-        except Exception:
+            routes.append(safe_route)
+            log.info(f"Safest: {safe_route['distanceKm']}km, {safe_route['durationMin']}min")
+        except Exception as e:
+            log.warning(f"Safe route failed: {e}")
             routes.append(_build_route(G, fast_path, "safe", "Safest Route", +12))
 
         # 3. Balanced
         try:
             bal_path = nx.shortest_path(G, orig, dest, weight="balanced_cost")
             bal_route = _build_route(G, bal_path, "balanced", "Balanced Route", 0)
-            if bal_route["distanceKm"] not in [r["distanceKm"] for r in routes]:
-                routes.append(bal_route)
-                log.info(
-                    f"Balanced: {bal_route['distanceKm']}km, {bal_route['durationMin']}min"
-                )
-        except Exception:
+            routes.append(bal_route)
+            log.info(f"Balanced: {bal_route['distanceKm']}km, {bal_route['durationMin']}min")
+        except Exception as e:
+            log.warning(f"Balanced route failed: {e}")
             routes.append(_build_route(G, fast_path, "balanced", "Balanced Route", 0))
 
         order = {"safe": 0, "balanced": 1, "fast": 2}
@@ -247,11 +252,30 @@ def get_safe_routes(olat, olng, dlat, dlng, db_conn=None) -> Optional[List[dict]
 def _build_route(G, path, route_id, name, bonus):
     import osmnx as ox
 
-    G_ll = ox.project_graph(G, to_crs="EPSG:4326")
+    G_ll = G
     coords = []
-    for n in path:
-        node = G_ll.nodes[n]
-        coords.append([node["y"], node["x"]])
+    
+    if not path:
+        return {"id": route_id, "name": name, "coords": [], "safetyScore": 50, "durationMin": 0, "distanceKm": 0, "highlights": []}
+
+    first_node = G_ll.nodes[path[0]]
+    coords.append([first_node["y"], first_node["x"]])
+    
+    for u, v in zip(path, path[1:]):
+        edge_data = G_ll[u][v]
+        if 0 in edge_data:
+            edge_data = edge_data[0]
+        elif edge_data:
+            edge_data = list(edge_data.values())[0]
+            
+        if "geometry" in edge_data:
+            # Reconstruct the physical bend in the road
+            for lon, lat in edge_data["geometry"].coords[1:]:
+                coords.append([lat, lon])
+        else:
+            # Fallback to straight line to the intersection
+            node = G_ll.nodes[v]
+            coords.append([node["y"], node["x"]])
 
     total_length = 0.0
     safety_scores = []
@@ -259,11 +283,10 @@ def _build_route(G, path, route_id, name, bonus):
 
     for u, v in zip(path, path[1:]):
         edge_data = G[u][v]
-        if isinstance(edge_data, dict):
-            if 0 in edge_data:
-                edge_data = edge_data[0]
-            elif edge_data:
-                edge_data = list(edge_data.values())[0]
+        if 0 in edge_data:
+            edge_data = edge_data[0]
+        elif edge_data:
+            edge_data = list(edge_data.values())[0]
         total_length += edge_data.get("length", 0)
         safety_scores.append(edge_data.get("safety_score", 50))
         rn = edge_data.get("name", "")

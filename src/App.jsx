@@ -9,6 +9,7 @@ import { useGPS }             from './hooks/useGPS.js'
 import { useLocationStream }  from './hooks/useLocationStream.js'
 import { isOffRoute } from './utils/safety.js'
 import { fetchSafeRoutes, fetchIncidents } from './utils/api.js'
+import LoginGateway from './components/LoginGateway.jsx'
 import styles from './App.module.css'
 
 const DEFAULT_ORIGIN = ''
@@ -42,6 +43,8 @@ export default function App() {
   const [destName, setDestName] = useState('')
   const [originPlace, setOriginPlace] = useState(null)
   const [destPlace, setDestPlace] = useState(null)
+
+  const [isAuthenticated, setIsAuthenticated] = useState(() => !!localStorage.getItem('safepath_auth'))
 
   const handleSetOrigin = (val) => {
     setOrigin(val)
@@ -227,6 +230,10 @@ export default function App() {
 
   return (
     <div className={styles.app}>
+      
+      {!isAuthenticated && (
+        <LoginGateway onAuthenticated={() => setIsAuthenticated(true)} />
+      )}
 
       <header className={styles.header}>
         <div className={styles.logo}>
