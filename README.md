@@ -197,3 +197,4 @@ Full interactive docs: `http://localhost:8000/docs`
 | Route engine slow | First run downloads OSM data; subsequent calls use cache |
 | SOS shows WhatsApp | Add Twilio keys to `backend/.env` for SMS |
 | DB connection error | Check `DATABASE_URL` in `.env`; ensure PostgreSQL is running |
+<!-- trigger deployment -->
