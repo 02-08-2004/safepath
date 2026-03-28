@@ -226,3 +226,24 @@
   border-radius: 50%;
   transition: all 0.3s ease;
 }
+
+@media (max-width: 768px) {
+  .infoBar {
+    right: 16px;
+    bottom: 85px; 
+    padding: 10px;
+    gap: 8px;
+    justify-content: center;
+  }
+  .infoItem {
+    text-align: center;
+  }
+  .startBtn {
+    width: 100%;
+    margin-top: 4px;
+    padding: 12px;
+  }
+  .legend {
+    display: none; 
+  }
+}
