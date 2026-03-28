@@ -2,12 +2,12 @@
 
 import { useState, useEffect, useCallback } from 'react'
 import { flushSync } from 'react-dom'
-import MapView       from './components/MapView.jsx'
-import Sidebar       from './components/Sidebar.jsx'
-import MapOverlay    from './components/MapOverlay.jsx'
+import MapView from './components/MapView.jsx'
+import Sidebar from './components/Sidebar.jsx'
+import MapOverlay from './components/MapOverlay.jsx'
 import FeedbackModal from './components/FeedbackModal.jsx'
-import { useGPS }             from './hooks/useGPS.js'
-import { useLocationStream }  from './hooks/useLocationStream.js'
+import { useGPS } from './hooks/useGPS.js'
+import { useLocationStream } from './hooks/useLocationStream.js'
 import { isOffRoute } from './utils/safety.js'
 import { fetchSafeRoutes, fetchIncidents } from './utils/api.js'
 import LoginGateway from './components/LoginGateway.jsx'
@@ -15,11 +15,20 @@ import AccountModal from './components/AccountModal.jsx'
 import { getAuthPayload, clearAuth } from './utils/api.js'
 import { API_BASE } from './utils/apiBase.js'
 import styles from './App.module.css'
+// Make sure you're using the correct variable name
+const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID;
+
+console.log("Google Client ID exists:", !!GOOGLE_CLIENT_ID);
+
+
+useEffect(() => {
+  console.log("VITE_GOOGLE_CLIENT_ID:", import.meta.env.VITE_GOOGLE_CLIENT_ID);
+}, []);
 
 const DEFAULT_ORIGIN = ''
-const DEFAULT_DEST   = ''
+const DEFAULT_DEST = ''
 const DEFAULT_ORIGIN_COORDS = [16.4307, 80.5195]
-const DEFAULT_DEST_COORDS   = [16.4520, 80.5080]
+const DEFAULT_DEST_COORDS = [16.4520, 80.5080]
 
 async function geocode(query) {
   try {
@@ -37,9 +46,9 @@ async function geocode(query) {
 
 export default function App() {
   const [origin, setOrigin] = useState(DEFAULT_ORIGIN)
-  const [dest,   setDest]   = useState(DEFAULT_DEST)
+  const [dest, setDest] = useState(DEFAULT_DEST)
   const [originCoords, setOriginCoords] = useState(DEFAULT_ORIGIN_COORDS)
-  const [destCoords,   setDestCoords]   = useState(DEFAULT_DEST_COORDS)
+  const [destCoords, setDestCoords] = useState(DEFAULT_DEST_COORDS)
   const [originName, setOriginName] = useState('')
   const [destName, setDestName] = useState('')
   const [originPlace, setOriginPlace] = useState(null)
@@ -79,17 +88,17 @@ export default function App() {
     console.log('Destination selected:', place)
   }
 
-  const [routes,          setRoutes]          = useState([])
+  const [routes, setRoutes] = useState([])
   const [selectedRouteId, setSelectedRouteId] = useState(null)
-  const [routeLoading,    setRouteLoading]    = useState(false)
-  const [loadingMsg,      setLoadingMsg]      = useState('Analyzing...')
-  const [geocodeError,    setGeocodeError]    = useState(null)
+  const [routeLoading, setRouteLoading] = useState(false)
+  const [loadingMsg, setLoadingMsg] = useState('Analyzing...')
+  const [geocodeError, setGeocodeError] = useState(null)
 
-  const [incidents,    setIncidents]    = useState([])
+  const [incidents, setIncidents] = useState([])
   const [showFeedback, setShowFeedback] = useState(false)
-  const [navStarted,   setNavStarted]   = useState(false)
-  const [toast,        setToast]        = useState(null)
-  const [sheetOpen,    setSheetOpen]    = useState(false)
+  const [navStarted, setNavStarted] = useState(false)
+  const [toast, setToast] = useState(null)
+  const [sheetOpen, setSheetOpen] = useState(false)
 
   const { position, accuracy, error: gpsError, loading: gpsLoading } = useGPS()
   const { wsStatus, serverMsg } = useLocationStream(position)
@@ -102,14 +111,14 @@ export default function App() {
       `https://nominatim.openstreetmap.org/reverse?lat=${position[0]}&lon=${position[1]}&format=json`,
       { headers: { "Accept-Language": "en" } }
     )
-    .then(r => r.json())
-    .then(d => {
-      const a = d.address || {}
-      const name = a.village || a.suburb || a.neighbourhood || a.town || a.city || a.county || ""
-      const state = a.state_district || a.state || "AP"
-      if (name) setLocationName(`${name}, ${state}`)
-    })
-    .catch(() => {})
+      .then(r => r.json())
+      .then(d => {
+        const a = d.address || {}
+        const name = a.village || a.suburb || a.neighbourhood || a.town || a.city || a.county || ""
+        const state = a.state_district || a.state || "AP"
+        if (name) setLocationName(`${name}, ${state}`)
+      })
+      .catch(() => { })
   }, [position?.[0]?.toFixed(2), position?.[1]?.toFixed(2)]) // eslint-disable-line
 
   useEffect(() => {
@@ -142,8 +151,8 @@ export default function App() {
 
     let oCoords = originCoords
     let dCoords = destCoords
-    let oLabel  = originName
-    let dLabel  = destName
+    let oLabel = originName
+    let dLabel = destName
 
     // Handle origin
     if (!origin || origin.trim() === '') {
@@ -157,12 +166,12 @@ export default function App() {
       }
     } else if (originPlace) {
       oCoords = [originPlace.lat, originPlace.lng]
-      oLabel  = originPlace.label
+      oLabel = originPlace.label
     } else {
       const resolved = await geocode(origin)
       if (resolved) {
         oCoords = [resolved[0], resolved[1]]
-        oLabel  = resolved[2] || origin
+        oLabel = resolved[2] || origin
         setOriginCoords(oCoords)
         setOriginName(oLabel)
       } else {
@@ -179,12 +188,12 @@ export default function App() {
       return
     } else if (destPlace) {
       dCoords = [destPlace.lat, destPlace.lng]
-      dLabel  = destPlace.label
+      dLabel = destPlace.label
     } else {
       const resolvedDest = await geocode(dest)
       if (resolvedDest) {
         dCoords = [resolvedDest[0], resolvedDest[1]]
-        dLabel  = resolvedDest[2] || dest
+        dLabel = resolvedDest[2] || dest
         setDestCoords(dCoords)
         setDestName(dLabel)
       } else {
@@ -237,7 +246,7 @@ export default function App() {
 
   return (
     <div className={styles.app}>
-      
+
       {!isAuthenticated && (
         <LoginGateway onAuthenticated={handleAuthenticated} />
       )}
@@ -250,10 +259,10 @@ export default function App() {
 
         <div className={styles.statusRow}>
           {gpsLoading
-            ? <span className={styles.pill} style={{ borderColor:'#f59e0b44', color:'#f59e0b' }}>⏳ Acquiring GPS…</span>
+            ? <span className={styles.pill} style={{ borderColor: '#f59e0b44', color: '#f59e0b' }}>⏳ Acquiring GPS…</span>
             : gpsError
-            ? <span className={styles.pill} style={{ borderColor:'#ef444444', color:'#ef4444' }}>⚠ {gpsError}</span>
-            : <span className={styles.pill}>
+              ? <span className={styles.pill} style={{ borderColor: '#ef444444', color: '#ef4444' }}>⚠ {gpsError}</span>
+              : <span className={styles.pill}>
                 <span className={styles.pulseDot} />
                 Live Safety Data Active
               </span>
@@ -343,7 +352,7 @@ export default function App() {
       </div>
 
       {geocodeError && (
-        <div className={styles.toast} style={{ background:'#7f1d1d', color:'#fff', bottom: '80px' }}>
+        <div className={styles.toast} style={{ background: '#7f1d1d', color: '#fff', bottom: '80px' }}>
           ⚠ {geocodeError}
         </div>
       )}

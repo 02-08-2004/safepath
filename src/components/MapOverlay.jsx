@@ -84,11 +84,17 @@ export default function MapOverlay({
   async function handleSOS() {
     if (!userPosition) return alert('GPS not yet available')
     setSosLoading(true)
+    
+    // 1. Try to send via backend Twilio API
     const result = await sendSOS(userPosition[0], userPosition[1])
     setSosLoading(false)
     setSosDone(true)
     setTimeout(() => setSosDone(false), 4000)
-    // No alert popup — WhatsApp opens automatically
+    
+    // 2. Fallback: Open WhatsApp automatically
+    const text = `EMERGENCY ALERT! I need help! Location: https://maps.google.com/?q=${userPosition[0]},${userPosition[1]}`
+    const waUrl = `https://wa.me/?text=${encodeURIComponent(text)}`
+    window.open(waUrl, '_blank')
   }
 
   const coords = selectedRoute?.coords || []
