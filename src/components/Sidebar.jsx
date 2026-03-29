@@ -30,8 +30,8 @@ const PREDEFINED_LOCATIONS = {
 }
 
 export default function Sidebar({
-  origin, setOrigin, onOriginSelect,
-  dest,   setDest,   onDestSelect,
+  origin, setOrigin, onOriginSelect, originPlace,
+  dest,   setDest,   onDestSelect,   destPlace,
   routes,
   selectedRouteId,
   onSelectRoute,
@@ -43,6 +43,7 @@ export default function Sidebar({
   onClose,
 }) {
   const [priority, setPriority] = useState('safety')
+  const [meshActive, setMeshActive] = useState(false)
   const [filters,  setFilters]  = useState(
     Object.fromEntries(FILTERS.map(f => [f.key, f.default]))
   )
@@ -51,10 +52,7 @@ export default function Sidebar({
   const [destSuggestions, setDestSuggestions] = useState([])
   const [showOriginDropdown, setShowOriginDropdown] = useState(false)
   const [showDestDropdown, setShowDestDropdown] = useState(false)
-  const [originPlace, setOriginPlace] = useState(null)
-  const [destPlace, setDestPlace] = useState(null)
-  const [originInput, setOriginInput] = useState('')
-  const [destInput, setDestInput] = useState('')
+
 
   const originRef = useRef(null)
   const destRef = useRef(null)
@@ -91,29 +89,29 @@ export default function Sidebar({
 
   useEffect(() => {
     const timer = setTimeout(() => {
-      if (originInput && originInput.length >= 2 && !originPlace) {
-        fetchSuggestions(originInput, setOriginSuggestions)
+      if (origin && origin.length >= 2 && !originPlace) {
+        fetchSuggestions(origin, setOriginSuggestions)
         setShowOriginDropdown(true)
-      } else if (!originInput) {
+      } else if (!origin) {
         setOriginSuggestions([])
         setShowOriginDropdown(false)
       }
     }, 300)
     return () => clearTimeout(timer)
-  }, [originInput])
+  }, [origin, originPlace])
 
   useEffect(() => {
     const timer = setTimeout(() => {
-      if (destInput && destInput.length >= 2 && !destPlace) {
-        fetchSuggestions(destInput, setDestSuggestions)
+      if (dest && dest.length >= 2 && !destPlace) {
+        fetchSuggestions(dest, setDestSuggestions)
         setShowDestDropdown(true)
-      } else if (!destInput) {
+      } else if (!dest) {
         setDestSuggestions([])
         setShowDestDropdown(false)
       }
     }, 300)
     return () => clearTimeout(timer)
-  }, [destInput])
+  }, [dest, destPlace])
 
   useEffect(() => {
     const handleClickOutside = (event) => {
@@ -125,28 +123,20 @@ export default function Sidebar({
   }, [])
 
   const handleOriginSelect = (place) => {
-    setOriginPlace(place)
-    setOriginInput(place.mainText)
-    setOrigin(place.mainText)
+    if (onOriginSelect) onOriginSelect(place)
     setShowOriginDropdown(false)
     setOriginSuggestions([])
-    if (onOriginSelect) onOriginSelect(place)
   }
 
   const handleDestSelect = (place) => {
-    setDestPlace(place)
-    setDestInput(place.mainText)
-    setDest(place.mainText)
+    if (onDestSelect) onDestSelect(place)
     setShowDestDropdown(false)
     setDestSuggestions([])
-    if (onDestSelect) onDestSelect(place)
   }
 
   const handleOriginChange = (e) => {
     const value = e.target.value
-    setOriginInput(value)
     setOrigin(value)
-    setOriginPlace(null)
     if (value.length >= 2) {
       fetchSuggestions(value, setOriginSuggestions)
       setShowOriginDropdown(true)
@@ -158,9 +148,7 @@ export default function Sidebar({
 
   const handleDestChange = (e) => {
     const value = e.target.value
-    setDestInput(value)
     setDest(value)
-    setDestPlace(null)
     if (value.length >= 2) {
       fetchSuggestions(value, setDestSuggestions)
       setShowDestDropdown(true)
@@ -171,11 +159,7 @@ export default function Sidebar({
   }
 
   const handleFindRoutes = () => {
-    if (originPlace && destPlace) {
-      onFindRoutes(priority, filters)
-    } else {
-      alert('Please select both starting point and destination from the dropdown suggestions')
-    }
+    onFindRoutes({ priority, filters })
   }
 
   return (
@@ -188,7 +172,7 @@ export default function Sidebar({
             <input
               type="text"
               className={styles.input}
-              value={originInput}
+              value={origin}
               onChange={handleOriginChange}
               placeholder="Starting point (e.g., SRM University)..."
               autoComplete="off"
@@ -210,7 +194,7 @@ export default function Sidebar({
             <input
               type="text"
               className={styles.input}
-              value={destInput}
+              value={dest}
               onChange={handleDestChange}
               placeholder="Destination..."
               autoComplete="off"
@@ -230,7 +214,7 @@ export default function Sidebar({
         {originPlace && <div className={styles.selectedPlace}>📍 Start: {originPlace.label}</div>}
         {destPlace && <div className={styles.selectedPlace}>🏁 Destination: {destPlace.label}</div>}
 
-        <p className={styles.label} style={{ marginTop: 14 }}>Optimize For</p>
+        <p className={styles.label}>Optimize For</p>
         <div className={styles.priorityGrid}>
           {PRIORITIES.map(p => (
             <button key={p.key} className={`${styles.priorityBtn} ${priority === p.key ? styles.active : ''}`} onClick={() => setPriority(p.key)}>
@@ -252,6 +236,14 @@ export default function Sidebar({
               <div className={`${styles.toggle} ${filters[f.key] ? styles.toggleOn : ''}`} onClick={() => toggleFilter(f.key)} role="switch" />
             </div>
           ))}
+        </div>
+        
+        <p className={styles.label} style={{ marginTop: 14 }}>Advanced Networking</p>
+        <div className={styles.filterItem} style={{ background: meshActive ? '#10b98120' : 'transparent', borderRadius: 8, padding: 8 }}>
+            <span className={styles.filterLabel} style={{ color: meshActive ? '#10b981' : 'inherit' }}>
+              📡 {meshActive ? 'Mesh Active (4 Nodes Linked)' : 'Offline Mesh Network'}
+            </span>
+            <div className={`${styles.toggle} ${meshActive ? styles.toggleOn : ''}`} onClick={() => setMeshActive(!meshActive)} role="switch" />
         </div>
       </section>
 

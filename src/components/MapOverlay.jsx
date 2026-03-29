@@ -12,9 +12,9 @@ function getDistance(a, b) {
   const R = 6371000
   const dLat = (b[0] - a[0]) * Math.PI / 180
   const dLng = (b[1] - a[1]) * Math.PI / 180
-  const x = Math.sin(dLat/2) ** 2 +
-    Math.cos(a[0] * Math.PI/180) * Math.cos(b[0] * Math.PI/180) * Math.sin(dLng/2) ** 2
-  return R * 2 * Math.atan2(Math.sqrt(x), Math.sqrt(1-x))
+  const x = Math.sin(dLat / 2) ** 2 +
+    Math.cos(a[0] * Math.PI / 180) * Math.cos(b[0] * Math.PI / 180) * Math.sin(dLng / 2) ** 2
+  return R * 2 * Math.atan2(Math.sqrt(x), Math.sqrt(1 - x))
 }
 
 function getBearing(a, b) {
@@ -27,7 +27,7 @@ function getBearing(a, b) {
 }
 
 function bearingToDirection(bearing) {
-  const dirs = ['N','NE','E','SE','S','SW','W','NW']
+  const dirs = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW']
   return dirs[Math.round(bearing / 45) % 8]
 }
 
@@ -38,7 +38,7 @@ function getTurnInstruction(prev, curr, next) {
   let diff = b2 - b1
   if (diff > 180) diff -= 360
   if (diff < -180) diff += 360
-  if (diff > 30)  return { icon: '→', text: 'Turn right' }
+  if (diff > 30) return { icon: '→', text: 'Turn right' }
   if (diff < -30) return { icon: '←', text: 'Turn left' }
   return { icon: '↑', text: 'Continue straight' }
 }
@@ -57,6 +57,7 @@ export default function MapOverlay({
 
   const [sosLoading, setSosLoading] = useState(false)
   const [sosDone, setSosDone] = useState(false)
+  const [sosMessage, setSosMessage] = useState('')
   const [stepIndex, setStepIndex] = useState(0)
 
   const badge = selectedRoute ? scoreToBadge(selectedRoute.safetyScore) : null
@@ -84,15 +85,30 @@ export default function MapOverlay({
   async function handleSOS() {
     if (!userPosition) return alert('GPS not yet available')
     setSosLoading(true)
-    
-    // 1. Try to send via backend Twilio API
+
+    try {
+      if (typeof window.navigator.vibrate === 'function') {
+        window.navigator.vibrate([200, 100, 200])
+      }
+    } catch (e) {}
+
     const result = await sendSOS(userPosition[0], userPosition[1])
     setSosLoading(false)
     setSosDone(true)
-    setTimeout(() => setSosDone(false), 4000)
-    
-    // 2. Fallback: Open WhatsApp automatically
-    const text = `EMERGENCY ALERT! I need help! Location: https://maps.google.com/?q=${userPosition[0]},${userPosition[1]}`
+
+    if (result.status === 'mock_sent') {
+      setSosMessage('DEMO MODE: SOS Logged to Terminal')
+    } else {
+      setSosMessage('EMERGENCY ALERT SENT!')
+    }
+
+    setTimeout(() => {
+      setSosDone(false)
+      setSosMessage('')
+    }, 5000)
+
+    // Trigger WhatsApp (best-effort pop-under to avoid blocking)
+    const text = `🚨 EMERGENCY ALERT! I need help! Location: https://maps.google.com/?q=${userPosition[0]},${userPosition[1]}`
     const waUrl = `https://wa.me/?text=${encodeURIComponent(text)}`
     window.open(waUrl, '_blank')
   }
@@ -108,7 +124,7 @@ export default function MapOverlay({
 
   const remaining = coords.slice(stepIndex).reduce((acc, c, i, arr) => {
     if (i === 0) return acc
-    return acc + getDistance(arr[i-1], c)
+    return acc + getDistance(arr[i - 1], c)
   }, 0)
 
   const remainingKm = (remaining / 1000).toFixed(1)
@@ -135,7 +151,7 @@ export default function MapOverlay({
                 <div className={styles.navDist}>
                   in {distToNext < 1000
                     ? `${Math.round(distToNext)}m`
-                    : `${(distToNext/1000).toFixed(1)}km`}
+                    : `${(distToNext / 1000).toFixed(1)}km`}
                 </div>
               )}
             </div>
@@ -154,13 +170,13 @@ export default function MapOverlay({
           <button
             onClick={onStopNav}
             style={{
-              marginTop:10,
-              padding:'8px 14px',
-              background:'#ef4444',
-              color:'#fff',
-              border:'none',
-              borderRadius:'6px',
-              cursor:'pointer'
+              marginTop: 10,
+              padding: '8px 14px',
+              background: '#ef4444',
+              color: '#fff',
+              border: 'none',
+              borderRadius: '6px',
+              cursor: 'pointer'
             }}
           >
             ⛔ Stop Navigation
@@ -169,15 +185,6 @@ export default function MapOverlay({
         </div>
       )}
 
-      {/* Legend */}
-      <div className={`${styles.panel} ${styles.legend} fade-up`}>
-        <div className={styles.panelTitle}>Safety Legend</div>
-        <div className={styles.legendItem}><span className={styles.ldot} style={{ background:'#10b981'}} />Safe Zone</div>
-        <div className={styles.legendItem}><span className={styles.ldot} style={{ background:'#f59e0b'}} />Moderate Risk</div>
-        <div className={styles.legendItem}><span className={styles.ldot} style={{ background:'#ef4444'}} />High Risk</div>
-        <div className={styles.legendItem}><span className={styles.ldot} style={{ background:'#00e5ff'}} />Selected Route</div>
-        <div className={styles.legendItem}>📍 Incident Markers</div>
-      </div>
 
       <button
         className={`${styles.sosBtn} ${sosDone ? styles.sosDone : ''}`}
@@ -185,8 +192,14 @@ export default function MapOverlay({
         disabled={sosLoading}
         title="Send SOS with your live location"
       >
-        {sosLoading ? '...' : sosDone ? '✓ Sent' : 'SOS'}
+        {sosLoading ? '⌛' : (sosDone ? '✅' : 'SOS')}
       </button>
+
+      {sosMessage && (
+        <div className={styles.sosBanner}>
+          🚨 {sosMessage}
+        </div>
+      )}
 
       {accuracy && (
         <div className={styles.accuracyBadge}>

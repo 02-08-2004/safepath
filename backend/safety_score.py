@@ -1,76 +1,108 @@
-# ── Phase 3: Safety Scoring Engine ──────────────────────────────────────────
-# Computes a 0-100 safety score for a road segment using weighted factors.
-# Called by the route optimizer to assign costs to graph edges.
-
-from dataclasses import dataclass, field
+# ── Safety Score Calculation with AP Dataset Integration ──────────────────────
+from dataclasses import dataclass
 from typing import Optional
+import os
+import json
+import logging
+from datetime import datetime
+
+log = logging.getLogger(__name__)
+
+# Try to load the safety dataset
+try:
+    from safety_data import SafetyDataset, SafetyPredictor, create_ap_safety_dataset
+    
+    # Load or create dataset
+    DATASET_PATH = os.path.join(os.path.dirname(__file__), 'safety_data.json')
+    if os.path.exists(DATASET_PATH):
+        dataset = SafetyDataset.load(DATASET_PATH)
+    else:
+        dataset = create_ap_safety_dataset()
+        dataset.save(DATASET_PATH)
+    
+    predictor = SafetyPredictor(dataset)
+    HAS_DATASET = True
+    log.info("✅ Safety dataset loaded successfully")
+except ImportError:
+    HAS_DATASET = False
+    log.warning("⚠️ Safety dataset not available, using basic scoring")
 
 
 @dataclass
 class SegmentFactors:
-    """All measurable safety factors for a single road segment."""
-    lighting:         float = 50.0   # 0 = no light, 100 = fully lit
-    crime_incidents:  int   = 0      # number of incidents within 100 m in last 30 days
-    crowd_density:    float = 50.0   # 0 = deserted, 100 = very busy
-    has_cctv:         bool  = False
-    has_patrol:       bool  = False
-    near_hospital:    bool  = False  # bonus — quick emergency access
-    time_of_day:      int   = 12     # hour 0-23 (lighting weight increases at night)
+    lighting: float
+    crime_incidents: int
+    crowd_density: float
+    has_cctv: bool
+    has_patrol: bool
+    time_of_day: int
+    lat: Optional[float] = None
+    lng: Optional[float] = None
+    near_hospital: bool = False
 
 
-# Factor weights — must sum to 1.0
-WEIGHTS = {
-    "lighting":  0.30,
-    "crime":     0.25,
-    "crowd":     0.25,
-    "cctv":      0.20,
-}
-
-
-def calculate_safety_score(factors: SegmentFactors) -> int:
-    """
-    Returns an integer safety score in [0, 100].
-    Higher = safer.
-    """
-    # Lighting adjustment: weight climbs to 0.45 between 20:00-05:00
-    is_night = factors.time_of_day >= 20 or factors.time_of_day <= 5
-    lighting_weight = 0.45 if is_night else WEIGHTS["lighting"]
-    crime_weight    = 0.25
-    crowd_weight    = 0.20 if is_night else WEIGHTS["crowd"]
-    cctv_weight     = 0.10 if is_night else WEIGHTS["cctv"]
-
-    # Normalise crime count: 0 incidents → 100, each incident costs 10 points (floor 0)
-    crime_score = max(0.0, 100.0 - factors.crime_incidents * 10)
-
-    # CCTV / patrol bonuses
-    cctv_score  = 100.0 if factors.has_cctv    else 20.0
-    crowd_score = factors.crowd_density
-
-    # If patrol is active, add flat +5 bonus (capped at 100)
-    patrol_bonus   = 5.0 if factors.has_patrol   else 0.0
-    hospital_bonus = 3.0 if factors.near_hospital else 0.0
-
-    raw = (
-        factors.lighting * lighting_weight +
-        crime_score       * crime_weight    +
-        crowd_score       * crowd_weight    +
-        cctv_score        * cctv_weight     +
-        patrol_bonus + hospital_bonus
+def calculate_safety_score(factors: SegmentFactors) -> float:
+    """Calculate safety score with AP dataset integration"""
+    
+    # Try to get enhanced score from dataset if available
+    if HAS_DATASET and factors.lat and factors.lng:
+        try:
+            prediction = predictor.predict(factors.lat, factors.lng, factors.time_of_day)
+            
+            # Blend dataset score with real-time factors
+            dataset_score = prediction['safety_score']
+            
+            # Real-time factors (from OSM and DB)
+            realtime_score = (
+                factors.lighting * 0.25 +
+                (100 - min(factors.crime_incidents * 5, 100)) * 0.25 +
+                factors.crowd_density * 0.20 +
+                (100 if factors.has_cctv else 0) * 0.15 +
+                (100 if factors.has_patrol else 0) * 0.15
+            )
+            
+            if factors.near_hospital:
+                realtime_score += 5
+                
+            # Weighted blend: 70% dataset, 30% realtime
+            final_score = dataset_score * 0.7 + realtime_score * 0.3
+            
+            # Night time adjustment
+            if factors.time_of_day < 6 or factors.time_of_day > 20:
+                final_score = final_score * 0.85
+            
+            return min(100, max(0, final_score))
+            
+        except Exception as e:
+            log.error(f"Dataset prediction error: {e}")
+    
+    # Fallback to basic scoring
+    score = (
+        factors.lighting * 0.30 +
+        (100 - min(factors.crime_incidents * 5, 100)) * 0.25 +
+        factors.crowd_density * 0.25 +
+        (100 if factors.has_cctv else 0) * 0.20
     )
-    return min(100, round(raw))
+    
+    if factors.time_of_day < 6 or factors.time_of_day > 20:
+        score = score * 0.7
+    
+    return min(100, max(0, score))
 
 
-def score_to_label(score: int) -> str:
-    if score >= 75: return "safe"
-    if score >= 50: return "moderate"
-    return "danger"
-
-
-def score_to_cost(score: int) -> float:
-    """
-    Convert safety score to a path cost for A* / Dijkstra.
-    Low safety score = high cost = route optimizer avoids it.
-    Uses an exponential penalty so very unsafe segments are strongly avoided.
-    """
+def score_to_cost(score: float) -> float:
+    """Convert safety score to pathfinding cost (higher score = lower cost)"""
     safety_ratio = score / 100.0
     return 1.0 + (1.0 - safety_ratio) ** 2 * 10.0
+
+
+# ── Additional helper functions for route enrichment ──────────────────────────
+def get_road_safety_summary(lat: float, lng: float) -> dict:
+    """Get detailed safety summary for a location"""
+    if not HAS_DATASET:
+        return {'status': 'dataset_not_available'}
+    
+    try:
+        return predictor.predict(lat, lng)
+    except Exception as e:
+        return {'error': str(e)}

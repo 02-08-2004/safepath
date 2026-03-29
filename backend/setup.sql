@@ -3,8 +3,9 @@
 --   psql -U postgres -c "CREATE DATABASE safepath;"
 --   psql -U postgres -d safepath -f setup.sql
 
--- Enable PostGIS (Phase 2 requirement)
+-- Enable PostGIS and Trigram support (Phase 2 & 4)
 CREATE EXTENSION IF NOT EXISTS postgis;
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
 
 -- ── Safety Zones ────────────────────────────────────────────────────────
 -- Polygonal areas with a pre-computed safety score
@@ -79,3 +80,38 @@ INSERT INTO incidents (type, description, severity, source, geom) VALUES
   ('cctv',          'CCTV coverage near municipal office',              1, 'user',
    ST_SetSRID(ST_Point(80.5150, 16.4390), 4326))
 ON CONFLICT DO NOTHING;
+
+-- ── AP DATA NETWORK (Phase 4 Optimization) ───────────────────────────
+
+CREATE TABLE IF NOT EXISTS road_nodes (
+    osmid BIGINT PRIMARY KEY,
+    geom  GEOMETRY(POINT, 4326) NOT NULL,
+    x     DOUBLE PRECISION,
+    y     DOUBLE PRECISION
+);
+CREATE INDEX IF NOT EXISTS idx_road_nodes_geom ON road_nodes USING GIST(geom);
+
+CREATE TABLE IF NOT EXISTS road_edges (
+    u      BIGINT NOT NULL,
+    v      BIGINT NOT NULL,
+    key    INT NOT NULL,
+    osmid  BIGINT,
+    name   TEXT,
+    highway TEXT,
+    length FLOAT,
+    geom   GEOMETRY(LINESTRING, 4326) NOT NULL,
+    PRIMARY KEY (u, v, key)
+);
+CREATE INDEX IF NOT EXISTS idx_road_edges_geom ON road_edges USING GIST(geom);
+CREATE INDEX IF NOT EXISTS idx_road_edges_u    ON road_edges(u);
+CREATE INDEX IF NOT EXISTS idx_road_edges_v    ON road_edges(v);
+
+CREATE TABLE IF NOT EXISTS ap_locations (
+    id     SERIAL PRIMARY KEY,
+    name   TEXT,
+    place_type TEXT,
+    tags   JSONB,
+    geom   GEOMETRY(POINT, 4326) NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ap_locations_geom ON ap_locations USING GIST(geom);
+CREATE INDEX IF NOT EXISTS idx_ap_locations_name_trgm ON ap_locations USING GIST (name gist_trgm_ops);

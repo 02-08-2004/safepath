@@ -189,13 +189,6 @@ def require_auth(authorization: Optional[str] = Header(None)) -> dict:
 async def lifespan(app: FastAPI):
     ensure_schema()
     start_scheduler()
-    try:
-        from route_engine import prewarm_all
-
-        prewarm_all()
-        log.info("AP city graphs pre-warming in background...")
-    except Exception as e:
-        log.warning(f"Pre-warm failed: {e}")
     yield
     if db:
         db.close()
@@ -478,7 +471,16 @@ def send_sos(body: SOSBody):
         except Exception as e:
             log.error(f"SMS error: {e}")
             return {"status": "failed", "error": str(e)}
-    return {"status": "config_missing"}
+
+    # 🚨 Mock Mode for Demos (since credentials are missing)
+    log.info("\n" + "!" * 80)
+    log.info("🚨 EMERGENCY SOS ALERT TRIGGERED (MOCK MODE) 🚨")
+    log.info(f"FROM: {body.user_name}")
+    log.info(f"LOCATION: {maps_link}")
+    log.info(f"TIME: {time_str}")
+    log.info("!" * 80 + "\n")
+    
+    return {"status": "mock_sent", "message": "Demo Mode: SOS Logged to Terminal"}
 
 
 @app.get("/geocode")
@@ -498,25 +500,65 @@ def geocode(q: str):
 
     q_lower = q.lower().strip()
     custom_locations = {
-        "vit": {"label": "VIT-AP University", "mainText": "VIT-AP University", "secondText": "Main Gate, Inavolu", "lat": 16.4949, "lng": 80.4987, "fullAddress": ""},
-        "srm": {"label": "SRM University - AP", "mainText": "SRM University - AP", "secondText": "Neerukonda, Amaravati", "lat": 16.4520, "lng": 80.5080, "fullAddress": ""},
+        "vit": {"label": "VIT-AP University", "mainText": "VIT University", "secondText": "Guntur/Amaravati, Andhra Pradesh", "lat": 16.4949, "lng": 80.4987, "fullAddress": "VIT-AP University, Andhra Pradesh, India"},
+        "srm": {"label": "SRM University - AP", "mainText": "SRM University", "secondText": "Neerukonda, Amaravati", "lat": 16.4624, "lng": 80.5063, "fullAddress": "SRM University - AP, Amaravati, India"},
         "neerukonda": {"label": "Neerukonda Village", "mainText": "Neerukonda", "secondText": "Amaravati, Andhra Pradesh", "lat": 16.4646, "lng": 80.5002, "fullAddress": ""},
         "inavolu": {"label": "Inavolu Village", "mainText": "Inavolu", "secondText": "Amaravati, Andhra Pradesh", "lat": 16.4880, "lng": 80.5030, "fullAddress": ""},
+        "gollapudi": {"label": "Gollapudi, Vijayawada", "mainText": "Gollapudi", "secondText": "Vijayawada, NTR District", "lat": 16.5361, "lng": 80.5901, "fullAddress": "Gollapudi, Vijayawada, Andhra Pradesh"},
+        "benz circle": {"label": "Benz Circle, Vijayawada", "mainText": "Benz Circle", "secondText": "Vijayawada City", "lat": 16.5055, "lng": 80.6482, "fullAddress": "Benz Circle, Vijayawada, AP"},
     }
 
+    # 1. Try custom static locations first (Instant high-priority)
     for key, loc in custom_locations.items():
-        if key in q_lower:
-            results.append(loc)
-            seen.add(f"{loc['lat']:.5f},{loc['lng']:.5f}")
+        if key in q_lower or q_lower in key or q_lower in loc["mainText"].lower():
+            if f"{loc['lat']:.5f},{loc['lng']:.5f}" not in seen:
+                results.append(loc)
+                seen.add(f"{loc['lat']:.5f},{loc['lng']:.5f}")
 
-    # Add small delay to respect Nominatim rate limits
-    time.sleep(0.2)
+    # 2. Search local PostGIS database (Phase 4 Optimization)
+    if db:
+        try:
+            cur = db.cursor()
+            # Rank by trigram similarity for high-performance fuzzy matching
+            # LIMIT increased to 12 for better urban coverage
+            cur.execute(
+                """
+                SELECT name, place_type, ST_Y(geom) as lat, ST_X(geom) as lng,
+                       similarity(name, %s) as sml
+                FROM ap_locations
+                WHERE name % %s OR name ILIKE %s
+                ORDER BY sml DESC
+                LIMIT 12
+                """,
+                (q, q, f"{q}%")
+            )
+            db_places = cur.fetchall()
+            for name, p_type, lat, lng, sml in db_places:
+                key = f"{lat:.5f},{lng:.5f}"
+                if key not in seen:
+                    results.append({
+                        "label": f"{name}",
+                        "mainText": name,
+                        "secondText": f"{p_type.title()} in Andhra Pradesh",
+                        "lat": lat,
+                        "lng": lng,
+                        "fullAddress": f"{name}, Andhra Pradesh, India"
+                    })
+                    seen.add(key)
+            
+            # 🚀 INSTANT EXIT: If we have 3+ local results, return IMMEDIATELY.
+            # Do not wait for Nominatim (internet) or artificial delays.
+            if len(results) >= 3:
+                log.info(f"Geocode INSTANT: found {len(results)} local results for '{q}'")
+                geocode_cache[cache_key] = (time.time(), results)
+                return results
 
-    # Build search query - speed up by reducing external queries
-    search_queries = [
-        f"{q}, Amaravati, Andhra Pradesh",
-        f"{q}, Andhra Pradesh"
-    ]
+        except Exception as e:
+            log.error(f"DB geocode failed: {e}")
+
+    # 3. Fallback to Nominatim ONLY if local results are missing
+    # No artificial sleep here anymore — speed is priority
+    search_queries = [f"{q}, Andhra Pradesh, India", f"{q}, India"]
 
     for search_query in search_queries:
         if len(results) >= 5:
@@ -529,10 +571,11 @@ def geocode(q: str):
                     "format": "json",
                     "limit": 10,
                     "addressdetails": 1,
-                    "namedetails": 1,
+                    # Geographical bias: Amaravati/Guntur area
+                    "viewbox": "80.2,16.2,80.8,16.7",
+                    "bounded": 1,
                     "countrycodes": "in",
-                    "accept-language": "en",
-                    "dedupe": 1,
+                    "accept-language": "en"
                 },
                 headers={
                     "User-Agent": "SafePath/1.0 (https://safepath.app; support@safepath.app)",

@@ -18,19 +18,37 @@ import styles from './App.module.css'
 
 const DEFAULT_ORIGIN = ''
 const DEFAULT_DEST = ''
-const DEFAULT_ORIGIN_COORDS = [16.4307, 80.5195]
-const DEFAULT_DEST_COORDS = [16.4520, 80.5080]
+const DEFAULT_ORIGIN_COORDS = [16.5062, 80.6480] // AP Center default
+const DEFAULT_DEST_COORDS = [16.5062, 80.6480] 
 
 async function geocode(query) {
+  if (!query) return null
+  const q = query.toLowerCase().trim()
+  
+  // High-priority local points for reliable campus navigation
+  const coreMap = {
+    'vit': [16.497815, 80.524768, 'VIT University - AP, Amaravati'],
+    'srm': [16.4624338, 80.5063794, 'SRM University - AP, Amaravati'],
+    'neerukonda': [16.4646, 80.5002, 'Neerukonda, Amaravati'],
+    'nirukonda': [16.4646, 80.5002, 'Nirukonda, Amaravati'],
+    'mangalagiri': [16.4333, 80.5667, 'Mangalagiri, Andhra Pradesh'],
+    'vijayawada': [16.5062, 80.6480, 'Vijayawada, Andhra Pradesh'],
+    'guntur': [16.3067, 80.4365, 'Guntur, Andhra Pradesh'],
+    'amaravati': [16.5062, 80.6480, 'Amaravati, Andhra Pradesh'],
+  }
+  
+  for (const k in coreMap) {
+    if (q.includes(k)) return coreMap[k]
+  }
+
   try {
     const res = await fetch(`${API_BASE}/geocode?q=${encodeURIComponent(query)}`)
     if (!res.ok) return null
     const data = await res.json()
     if (!data || data.length === 0) return null
-    console.log(`Geocoded "${query}" → ${data[0].lat}, ${data[0].lng} (${data[0].label})`)
     return [data[0].lat, data[0].lng, data[0].label]
-  } catch (e) {
-    console.warn('Geocode failed:', e)
+  } catch (err) {
+    console.warn('Geocode API failed, falling back to local check.', err)
     return null
   }
 }
@@ -76,6 +94,7 @@ export default function App() {
     setDest(place.mainText)
     setDestCoords([place.lat, place.lng])
     setDestName(place.label)
+    setGeocodeError(null)
     console.log('Destination selected:', place)
   }
 
@@ -94,6 +113,9 @@ export default function App() {
   const { position, accuracy, error: gpsError, loading: gpsLoading } = useGPS()
   const { wsStatus, serverMsg } = useLocationStream(position)
   const [locationName, setLocationName] = useState('Mangalagiri, AP')
+  
+  // Advanced Features State
+  const [voiceActive, setVoiceActive] = useState(false)
 
   // Reverse geocode to get real location name
   useEffect(() => {
@@ -135,64 +157,119 @@ export default function App() {
     fetchIncidents(position[0], position[1]).then(setIncidents)
   }, [position?.[0]?.toFixed(3), position?.[1]?.toFixed(3)]) // eslint-disable-line
 
-  const handleFindRoutes = useCallback(async () => {
+  // 🎤 Web Speech API Implementation
+  useEffect(() => {
+    if (!voiceActive) return;
+
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      showToast("⚠ Browser does not support Speech Recognition.");
+      setVoiceActive(false);
+      return;
+    }
+
+    const rec = new SpeechRecognition();
+    rec.continuous = false;
+    rec.lang = 'en-IN';
+    rec.interimResults = false;
+
+    rec.onstart = () => showToast("🎤 Listening for destination...");
+    rec.onresult = (e) => {
+      let transcript = e.results[0][0].transcript.toLowerCase();
+      showToast(`🎤 Heard: "${transcript}"`);
+      
+      const prefixes = ["go to", "find route to", "take me to", "navigate to", "search for"];
+      for (const p of prefixes) {
+        if (transcript.startsWith(p)) transcript = transcript.replace(p, "").trim();
+      }
+      
+      // Robust filter: ignore nonsense words or short noise
+      const noise = ["dtp", "the", "and", "a", "hi", "hey"];
+      if (transcript && transcript.length > 3 && !noise.includes(transcript)) {
+        setDest(transcript);
+        setVoiceActive(false);
+        setGeocodeError(null);
+        handleFindRoutes(transcript); // Pass transcript directly to bypass state lag
+      } else {
+        setVoiceActive(false);
+      }
+    };
+
+    rec.onerror = () => setVoiceActive(false);
+    rec.onend = () => setVoiceActive(false);
+
+    rec.start();
+    return () => rec.abort();
+  }, [voiceActive]); // eslint-disable-line
+
+  const handleFindRoutes = useCallback(async (arg = {}) => {
+    const isVoice = typeof arg === 'string'
+    const voiceDest = isVoice ? arg : null
+    const priority = !isVoice ? (arg.priority || 'safety') : 'safety'
+    const activeFilters = !isVoice ? (arg.filters || {}) : {}
+
     setRouteLoading(true)
     setLoadingMsg('Finding location...')
     setGeocodeError(null)
+
+    const finalOrigin = origin.trim()
+    const finalDest = (voiceDest || dest).trim()
 
     let oCoords = originCoords
     let dCoords = destCoords
     let oLabel = originName
     let dLabel = destName
 
-    // Handle origin
-    if (!origin || origin.trim() === '') {
+    // 1. Resolve Origin
+    if (!finalOrigin || finalOrigin === '') {
       if (position) {
         oCoords = position
-        setOriginCoords(position)
         oLabel = 'Current Location'
       } else {
         oCoords = DEFAULT_ORIGIN_COORDS
-        setOriginCoords(DEFAULT_ORIGIN_COORDS)
+        oLabel = 'Andhra Pradesh'
       }
-    } else if (originPlace) {
+    } else if (originPlace && (originPlace.mainText === finalOrigin || originPlace.label === finalOrigin)) {
       oCoords = [originPlace.lat, originPlace.lng]
       oLabel = originPlace.label
     } else {
-      const resolved = await geocode(origin)
+      const resolved = await geocode(finalOrigin)
       if (resolved) {
         oCoords = [resolved[0], resolved[1]]
-        oLabel = resolved[2] || origin
-        setOriginCoords(oCoords)
-        setOriginName(oLabel)
+        oLabel = resolved[2]
+        setOriginPlace({ lat: oCoords[0], lng: oCoords[1], label: oLabel, mainText: finalOrigin })
       } else {
-        setGeocodeError(`Could not find "${origin}" — try full name like "Neerukonda, Guntur"`)
+        setGeocodeError(`Locate failed for "${finalOrigin}". Try full address.`)
         setRouteLoading(false)
         return
       }
     }
 
-    // Handle destination
-    if (!dest || dest.trim() === '') {
+    // 2. Resolve Destination
+    if (!finalDest || finalDest === '') {
       setGeocodeError('Please enter a destination')
       setRouteLoading(false)
       return
-    } else if (destPlace) {
+    } else if (destPlace && (destPlace.mainText === finalDest || destPlace.label === finalDest)) {
       dCoords = [destPlace.lat, destPlace.lng]
       dLabel = destPlace.label
     } else {
-      const resolvedDest = await geocode(dest)
+      const resolvedDest = await geocode(finalDest)
       if (resolvedDest) {
         dCoords = [resolvedDest[0], resolvedDest[1]]
-        dLabel = resolvedDest[2] || dest
-        setDestCoords(dCoords)
-        setDestName(dLabel)
+        dLabel = resolvedDest[2]
+        setDestPlace({ lat: dCoords[0], lng: dCoords[1], label: dLabel, mainText: finalDest })
       } else {
-        setGeocodeError(`Could not find "${dest}" — try full name like "Benz Circle, Vijayawada"`)
+        setGeocodeError(`Locate failed for "${finalDest}". Try a city or landmark.`)
         setRouteLoading(false)
         return
       }
     }
+
+    setOriginName(oLabel)
+    setDestName(dLabel)
+    setOriginCoords(oCoords)
+    setDestCoords(dCoords)
 
     setLoadingMsg('Calculating routes...')
 
@@ -295,9 +372,11 @@ export default function App() {
           origin={origin}
           setOrigin={handleSetOrigin}
           onOriginSelect={handleOriginSelect}
+          originPlace={originPlace}
           dest={dest}
           setDest={handleSetDest}
           onDestSelect={handleDestSelect}
+          destPlace={destPlace}
           routes={routes}
           selectedRouteId={selectedRouteId}
           onSelectRoute={setSelectedRouteId}
@@ -359,6 +438,18 @@ export default function App() {
       {toast && !geocodeError && (
         <div className={styles.toast}>{toast}</div>
       )}
+      
+      {/* Voice Navigation */}
+      <div style={{ position: 'absolute', bottom: 120, right: 20, zIndex: 1000, display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <button 
+          onClick={() => { setVoiceActive(!voiceActive); if(!voiceActive) showToast("🎤 Voice Navigation: Listening for destination...") }}
+          style={{ width:48, height:48, borderRadius:'50%', background: voiceActive ? '#ef4444' : '#1e293b', color:'#fff', border:'2px solid #334155', cursor:'pointer', fontSize: 20, display:'flex', alignItems:'center', justifyContent:'center', boxShadow:'0 4px 6px rgba(0,0,0,0.3)' }}
+          title="Voice Commander"
+        >
+          🎤
+        </button>
+      </div>
+
     </div>
   )
 }
