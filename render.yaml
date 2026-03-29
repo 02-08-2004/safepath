@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: safepath-api
+    runtime: python
+    buildCommand: "pip install -r backend/requirements.txt"
+    startCommand: "cd backend && uvicorn main:app --host 0.0.0.0 --port $PORT"
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: safepath-db
+          property: connectionString
+      - key: PYTHON_VERSION
+        value: 3.11.0 # Using 3.11 for better stability on Render
+      - key: APP_ENV
+        value: production
+
+databases:
+  - name: safepath-db
+    plan: free # 100% Free Tier
+    region: ohio
+    databaseName: safepath
+    user: postgres
+    # PostGIS will be enabled in setup.sql
