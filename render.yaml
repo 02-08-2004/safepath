@@ -19,5 +19,5 @@ databases:
     plan: free # 100% Free Tier
     region: ohio
     databaseName: safepath
-    user: postgres
+    user: safepath_user
     # PostGIS will be enabled in setup.sql
